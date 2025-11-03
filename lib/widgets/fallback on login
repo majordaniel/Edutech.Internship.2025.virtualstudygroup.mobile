@@ -1,0 +1,1162 @@
+import 'dart:convert';
+import 'dart:io';
+import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
+
+class ApiService {
+  static const String baseUrl = 'https://ediifyapi.tife.com.ng/api';
+  static const String corsProxy = 'https://corsproxy.io/?';
+  static String? _authToken;
+
+  // Public getter for auth token
+  static String? get authToken => _authToken;
+
+  static String get _effectiveBaseUrl {
+    if (kIsWeb) {
+      return '$corsProxy${Uri.encodeComponent(baseUrl)}';
+    }
+    return baseUrl;
+  }
+
+  static Future<void> initialize() async {
+    final prefs = await SharedPreferences.getInstance();
+    _authToken = prefs.getString('auth_token');
+    print(
+      '🔐 ApiService initialized - Token: ${_authToken != null ? "EXISTS" : "NULL"}',
+    );
+  }
+
+  static Future<Map<String, String>> getHeaders() async {
+    return await _headers;
+  }
+
+  static Future<Map<String, String>> get _headers async {
+    // Refresh token from storage in case it was updated
+    if (_authToken == null) {
+      await initialize();
+    }
+
+    final headers = {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      'X-Requested-With': 'XMLHttpRequest',
+    };
+
+    if (_authToken != null) {
+      headers['Authorization'] = 'Bearer $_authToken';
+      print('🔐 Adding Bearer token to request');
+    } else {
+      print('⚠️ No auth token available for API request');
+    }
+
+    return headers;
+  }
+
+  static Future<dynamic> post(String endpoint, dynamic data) async {
+    try {
+      final url = '$_effectiveBaseUrl/$endpoint';
+      print('🌐 API Call: POST $url');
+
+      final response = await http
+          .post(
+            Uri.parse(url),
+            headers: await _headers,
+            body: json.encode(data),
+          )
+          .timeout(const Duration(seconds: 30));
+
+      print('✅ API Response: ${response.statusCode}');
+      return _handleResponse(response);
+    } on SocketException {
+      throw Exception('No internet connection');
+    } catch (e) {
+      throw Exception('Network error: $e');
+    }
+  }
+
+  static Future<dynamic> get(String endpoint) async {
+    try {
+      final url = '$_effectiveBaseUrl/$endpoint';
+      print('🌐 API Call: GET $url');
+
+      final response = await http
+          .get(Uri.parse(url), headers: await _headers)
+          .timeout(const Duration(seconds: 30));
+
+      print('✅ API Response: ${response.statusCode}');
+      return _handleResponse(response);
+    } on SocketException {
+      throw Exception('No internet connection');
+    } catch (e) {
+      throw Exception('Network error: $e');
+    }
+  }
+
+  static dynamic _handleResponse(http.Response response) {
+    final responseBody = json.decode(response.body);
+
+    switch (response.statusCode) {
+      case 200:
+      case 201:
+        return responseBody;
+      case 400:
+        throw Exception(responseBody['message'] ?? 'Bad request');
+      case 401:
+        removeToken();
+        throw Exception(responseBody['message'] ?? 'Invalid credentials');
+      case 500:
+        throw Exception(responseBody['message'] ?? 'Server error');
+      default:
+        throw Exception('Error ${response.statusCode}');
+    }
+  }
+
+  static Future<void> saveToken(String token) async {
+    _authToken = token;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('auth_token', token);
+    print('💾 Token saved to storage');
+  }
+
+  static Future<void> removeToken() async {
+    _authToken = null;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('auth_token');
+    await prefs.remove('user_data');
+    print('🗑️ Token removed from storage');
+  }
+
+  // Add this method to your existing ApiService class
+  static Future<dynamic> put(String endpoint, dynamic data) async {
+    try {
+      final url = '$_effectiveBaseUrl/$endpoint';
+      print('🌐 API Call: PUT $url');
+
+      final response = await http
+          .put(Uri.parse(url), headers: await _headers, body: json.encode(data))
+          .timeout(const Duration(seconds: 30));
+
+      print('✅ API Response: ${response.statusCode}');
+      return _handleResponse(response);
+    } on SocketException {
+      throw Exception('No internet connection');
+    } catch (e) {
+      throw Exception('Network error: $e');
+    }
+  }
+
+  static Future<dynamic> delete(String endpoint) async {
+    try {
+      final url = '$_effectiveBaseUrl/$endpoint';
+      print('🌐 API Call: DELETE $url');
+
+      final response = await http
+          .delete(Uri.parse(url), headers: await _headers)
+          .timeout(const Duration(seconds: 30));
+
+      print('✅ API Response: ${response.statusCode}');
+      return _handleResponse(response);
+    } on SocketException {
+      throw Exception('No internet connection');
+    } catch (e) {
+      throw Exception('Network error: $e');
+    }
+  }
+
+  static Future<dynamic> postWithoutBody(String endpoint) async {
+    try {
+      final url = '$_effectiveBaseUrl/$endpoint';
+      print('🌐 API Call: POST $url (no body)');
+
+      final response = await http.post(Uri.parse(url), headers: await _headers);
+
+      print('✅ API Response: ${response.statusCode}');
+      return _handleResponse(response);
+    } on SocketException {
+      throw Exception('No internet connection');
+    } catch (e) {
+      throw Exception('Network error: $e');
+    }
+  }
+
+  // Add this public debug method
+  static Future<void> debugTokenStatus() async {
+    final prefs = await SharedPreferences.getInstance();
+    final storedToken = prefs.getString('auth_token');
+
+    print('🔍 ApiService Token Debug:');
+    print(
+      '   - Stored token: ${storedToken != null ? "EXISTS (${storedToken.length} chars)" : "NULL"}',
+    );
+    print(
+      '   - Memory token: ${_authToken != null ? "EXISTS (${_authToken!.length} chars)" : "NULL"}',
+    );
+    print('   - Both match: ${storedToken == _authToken}');
+  }
+}
+
+
+
+import 'dart:convert';
+import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
+import 'api_service.dart';
+import '../models/user_model.dart';
+import '../models/api_response.dart';
+import 'offline_service.dart';
+
+class AuthService {
+  static final OfflineService _offlineService = OfflineService();
+
+  static Future<ApiResponse<LoginResponseData>> login(
+    String email,
+    String password,
+  ) async {
+    // Check connectivity first
+    final isOnline = await _offlineService.isDeviceOnline();
+
+    if (!isOnline) {
+      print('📴 Device is offline - checking for cached login');
+      return _attemptOfflineLogin(email);
+    }
+
+    // Online login logic
+    try {
+      final response = await ApiService.post('auth/login', {
+        'email': email,
+        'password': password,
+      });
+
+      print('✅ LOGIN RESPONSE: ${response}');
+
+      final apiResponse = ApiResponse<LoginResponseData>.fromJson(
+        response,
+        (data) => LoginResponseData.fromJson(data),
+      );
+
+      if (apiResponse.isSuccess) {
+        print('✅ LOGIN SUCCESS - Token: ${apiResponse.data!.token}');
+        await ApiService.saveToken(apiResponse.data!.token);
+        await _saveUserData(apiResponse.data!.user);
+
+        // Cache login data for offline use
+        await _cacheLoginData(email, apiResponse.data!);
+
+        await debugTokenStatus();
+      } else {
+        print('❌ LOGIN FAILED: ${apiResponse.message}');
+      }
+
+      return apiResponse;
+    } catch (e) {
+      print('❌ LOGIN EXCEPTION: $e');
+
+      // If online but server is down, try offline login
+      return _attemptOfflineLogin(email);
+    }
+  }
+
+  // Offline login attempt
+  static Future<ApiResponse<LoginResponseData>> _attemptOfflineLogin(
+    String email,
+  ) async {
+    print('📴 Attempting offline login for: $email');
+
+    final cachedData = await OfflineService.getOfflineData('last_login_$email');
+
+    if (cachedData != null) {
+      try {
+        final jsonData = json.decode(cachedData);
+        final loginData = LoginResponseData.fromJson(jsonData);
+
+        // Restore token and user data
+        await ApiService.saveToken(loginData.token);
+        await _saveUserData(loginData.user);
+
+        print('✅ Offline login successful');
+        return ApiResponse<LoginResponseData>(
+          status: 'success',
+          message: 'Logged in offline with cached credentials',
+          data: loginData,
+        );
+      } catch (e) {
+        print('❌ Offline login failed: $e');
+      }
+    }
+
+    return ApiResponse<LoginResponseData>(
+      status: 'error',
+      message:
+          'No internet connection and no cached login available. Please connect to internet and login first.',
+      data: null,
+    );
+  }
+
+  // Cache login data for offline use
+  static Future<void> _cacheLoginData(
+    String email,
+    LoginResponseData loginData,
+  ) async {
+    try {
+      await OfflineService.saveOfflineData(
+        'last_login_$email',
+        json.encode(loginData.toJson()),
+      );
+      print('💾 Cached login data for offline use');
+    } catch (e) {
+      print('❌ Failed to cache login data: $e');
+    }
+  }
+
+  static Future<ApiResponse<dynamic>> logout() async {
+    final response = await ApiService.post('logout', {});
+    await ApiService.removeToken();
+    return ApiResponse<dynamic>.fromJson(response, null);
+  }
+
+  static Future<User?> getCurrentUser() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final userData = prefs.getString('user_data');
+
+      if (userData != null) {
+        return User.fromJson(json.decode(userData));
+      }
+      return null;
+    } catch (e) {
+      print('❌ Error getting current user: $e');
+      return null;
+    }
+  }
+
+  static Future<bool> isLoggedIn() async {
+    try {
+      await ApiService.initialize();
+      final prefs = await SharedPreferences.getInstance();
+      final hasToken = prefs.containsKey('auth_token');
+      final token = prefs.getString('auth_token');
+
+      print('🔐 AuthService.isLoggedIn():');
+      print('   - Has token in storage: $hasToken');
+      print('   - Token length: ${token?.length ?? 0}');
+
+      return hasToken && token != null && token.isNotEmpty;
+    } catch (e) {
+      print('❌ Error in isLoggedIn: $e');
+      return false;
+    }
+  }
+
+  static Future<void> _saveUserData(User user) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('user_data', json.encode(user.toJson()));
+      print('💾 User data saved to storage');
+    } catch (e) {
+      print('❌ Error saving user data: $e');
+    }
+  }
+
+  // Update debug method to use public access
+  static Future<void> debugTokenStatus() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final token = prefs.getString('auth_token');
+      final userData = prefs.getString('user_data');
+
+      print('🔍 AUTH SERVICE DEBUG:');
+      print('   - Auth token in storage: ${token != null ? "EXISTS" : "NULL"}');
+      print(
+        '   - User data in storage: ${userData != null ? "EXISTS" : "NULL"}',
+      );
+      print(
+        '   - ApiService.authToken: ${ApiService.authToken != null ? "SET" : "NULL"}',
+      );
+    } catch (e) {
+      print('❌ Error in debugTokenStatus: $e');
+    }
+  }
+
+  static Future<bool> testApiConnection() async {
+    try {
+      print('🔌 Testing API connection...');
+      final response = await http
+          .get(
+            Uri.parse('https://ediifyapi.tife.com.ng/api/'),
+            headers: {'Content-Type': 'application/json'},
+          )
+          .timeout(const Duration(seconds: 10));
+
+      print('📡 API Connection Test: Status ${response.statusCode}');
+
+      // Consider it connected if we get any response (even 404, 500, etc.)
+      // because it means the server is reachable
+      final isConnected = response.statusCode < 500;
+      print('📡 Server reachable: $isConnected');
+
+      return isConnected;
+    } catch (e) {
+      print('❌ API Connection Test FAILED: $e');
+      return false;
+    }
+  }
+
+  // services/auth_service.dart - Add this method
+  static Future<ApiResponse<dynamic>> register({
+    required String firstName,
+    required String lastName,
+    required String email,
+    required String password,
+  }) async {
+    try {
+      print('📝 Starting registration for: $email');
+
+      final response = await ApiService.post('auth/register', {
+        'first_name': firstName,
+        'last_name': lastName,
+        'email': email,
+        'password': password,
+        'password_confirmation': password,
+      });
+
+      print('📡 Registration response: $response');
+
+      return ApiResponse<dynamic>.fromJson(response, null);
+    } catch (e) {
+      print('❌ Registration error: $e');
+      return ApiResponse<dynamic>(
+        status: 'error',
+        message: e.toString(),
+        data: null,
+      );
+    }
+  }
+}
+
+class LoginResponseData {
+  final String message;
+  final User user;
+  final String token;
+
+  LoginResponseData({
+    required this.message,
+    required this.user,
+    required this.token,
+  });
+
+  factory LoginResponseData.fromJson(Map<String, dynamic> json) {
+    return LoginResponseData(
+      message: json['message'],
+      user: User.fromJson(json['user']),
+      token: json['token'],
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {'message': message, 'user': user.toJson(), 'token': token};
+  }
+}
+
+
+
+import 'package:edify_app/services/api_service.dart';
+import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
+import '../models/user_model.dart';
+import '../services/auth_service.dart';
+import '../services/offline_service.dart';
+
+class UserProvider with ChangeNotifier {
+  User? _user;
+  bool _isLoading = false;
+  String? _error;
+  bool _isOffline = false;
+
+  User? get user => _user;
+  bool get isLoading => _isLoading;
+  String? get error => _error;
+  bool get isOffline => _isOffline;
+
+  Future<bool> login(String email, String password) async {
+    _isLoading = true;
+    _error = null;
+    notifyListeners();
+
+    try {
+      final response = await AuthService.login(email, password);
+
+      if (response.isSuccess) {
+        _user = response.data!.user;
+        _error = null;
+        _isLoading = false;
+
+        // Check if this was an offline login
+        if (response.message.contains('offline') == true) {
+          _isOffline = true;
+          print('📴 User logged in offline mode');
+        } else {
+          _isOffline = false;
+        }
+
+        notifyListeners();
+        return true;
+      } else {
+        _error = response.message;
+        _isLoading = false;
+        notifyListeners();
+        return false;
+      }
+    } catch (e) {
+      _error = e.toString();
+      _isLoading = false;
+      notifyListeners();
+      return false;
+    }
+  }
+
+  Future<bool> register({
+    required String firstName,
+    required String lastName,
+    required String email,
+    required String password,
+  }) async {
+    _isLoading = true;
+    _error = null;
+    notifyListeners();
+
+    try {
+      final response = await AuthService.register(
+        firstName: firstName,
+        lastName: lastName,
+        email: email,
+        password: password,
+      );
+
+      if (response.isSuccess) {
+        _isLoading = false;
+        notifyListeners();
+        return true;
+      } else {
+        _error = response.message;
+        _isLoading = false;
+        notifyListeners();
+        return false;
+      }
+    } catch (e) {
+      _error = e.toString();
+      _isLoading = false;
+      notifyListeners();
+      return false;
+    }
+  }
+
+  // In your UserProvider class
+  Future<void> logout() async {
+    try {
+      print('🌐 Calling logout API...');
+
+      // Clear state first
+      _user = null;
+      _isOffline = false;
+      _error = null;
+
+      // Call API logout if online
+      if (!_isOffline) {
+        try {
+          await AuthService.logout();
+        } catch (e) {
+          print('⚠️ API logout failed, but continuing: $e');
+        }
+      }
+
+      // Clear local storage
+      await ApiService.removeToken();
+
+      // Notify listeners
+      notifyListeners();
+
+      print('✅ Logout completed successfully');
+    } catch (e) {
+      print('❌ Logout error: $e');
+      // Even if logout fails, clear local data
+      await ApiService.removeToken();
+      _user = null;
+      _isOffline = false;
+      notifyListeners();
+      rethrow;
+    }
+  }
+
+  // Update initialize to work offline
+  Future<void> initialize() async {
+    print('🔄 UserProvider initializing...');
+
+    // Check connectivity
+    final offlineService = OfflineService();
+    _isOffline = !(await offlineService.isDeviceOnline());
+
+    if (_isOffline) {
+      print('📴 Initializing in offline mode');
+    } else {
+      print('📱 Initializing in online mode');
+    }
+
+    await AuthService.debugTokenStatus();
+
+    final isLoggedIn = await AuthService.isLoggedIn();
+    print('📊 Login status: $isLoggedIn');
+
+    if (isLoggedIn) {
+      _user = await AuthService.getCurrentUser();
+      print('✅ User loaded: ${_user?.email}');
+    } else {
+      print('❌ No user logged in');
+    }
+
+    notifyListeners();
+  }
+
+  // Add method to check connectivity
+  Future<void> checkConnectivity() async {
+    try {
+      final offlineService = OfflineService();
+      final wasOffline = _isOffline;
+      _isOffline = !(await offlineService.isDeviceOnline());
+
+      if (wasOffline != _isOffline) {
+        print(_isOffline ? '📴 Went offline' : '📱 Back online');
+        notifyListeners();
+      }
+    } catch (e) {
+      print('❌ Error checking connectivity: $e');
+    }
+  }
+
+  void clearError() {
+    _error = null;
+    notifyListeners();
+  }
+}
+
+
+
+
+
+import 'package:edify_app/auth/register_page.dart';
+import 'package:edify_app/constants/colors.dart';
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import '../../providers/user_provider.dart';
+import '../../services/auth_service.dart';
+
+class LoginPage extends StatefulWidget {
+  const LoginPage({super.key});
+
+  @override
+  _LoginPageState createState() => _LoginPageState();
+}
+
+class _LoginPageState extends State<LoginPage> {
+  final _formKey = GlobalKey<FormState>();
+  final _emailController = TextEditingController();
+  final _passwordController = TextEditingController();
+  bool _obscurePassword = true;
+  bool _isServerConnected = false;
+  bool _isDisposed = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _debugInitialState();
+    _checkServerConnection();
+  }
+
+  bool get isSafe => mounted && !_isDisposed;
+
+  Future<void> _debugInitialState() async {
+    print('🔄 LoginPage initializing...');
+    await AuthService.debugTokenStatus();
+  }
+
+  Future<void> _checkServerConnection() async {
+    final isConnected = await AuthService.testApiConnection();
+
+    if (isSafe) {
+      setState(() {
+        _isServerConnected = isConnected;
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _isDisposed = true;
+    _emailController.dispose();
+    _passwordController.dispose();
+    super.dispose();
+  }
+
+  void _handleLoginSuccess() {
+    // Navigate to homepage immediately after successful login
+    if (isSafe) {
+      // Use Navigator.pushReplacement to replace login page with homepage
+      Navigator.pushReplacementNamed(context, '/');
+
+      // Show success message after navigation
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        final userProvider = Provider.of<UserProvider>(context, listen: false);
+        String message;
+        Color backgroundColor;
+
+        if (userProvider.isOffline) {
+          message = 'Welcome back! (Offline Mode)';
+          backgroundColor = Colors.blue;
+        } else {
+          message = 'Welcome back, ${userProvider.user?.firstName ?? "User"}!';
+          backgroundColor = Colors.green;
+        }
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(message),
+            backgroundColor: backgroundColor,
+            duration: Duration(seconds: 3),
+          ),
+        );
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final userProvider = Provider.of<UserProvider>(context);
+
+    return Scaffold(
+      backgroundColor: Colors.white,
+      body: SafeArea(
+        child: SingleChildScrollView(
+          padding: EdgeInsets.all(24.0),
+          child: Form(
+            key: _formKey,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SizedBox(height: 40),
+
+                // Offline Mode Indicator
+                if (userProvider.isOffline)
+                  Container(
+                    width: double.infinity,
+                    padding: EdgeInsets.all(12),
+                    margin: EdgeInsets.only(bottom: 20),
+                    decoration: BoxDecoration(
+                      color: Colors.blue[50],
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.blue),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(Icons.wifi_off, color: Colors.blue, size: 20),
+                        SizedBox(width: 12),
+                        Expanded(
+                          child: Text(
+                            'Offline Mode - Using cached data',
+                            style: TextStyle(
+                              color: Colors.blue[800],
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+
+                // Server Connection Status
+                if (!_isServerConnected && !userProvider.isOffline)
+                  Container(
+                    width: double.infinity,
+                    padding: EdgeInsets.all(16),
+                    margin: EdgeInsets.only(bottom: 20),
+                    decoration: BoxDecoration(
+                      color: Colors.red[50],
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.red),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(Icons.wifi_off, color: Colors.red, size: 24),
+                        SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Server Unavailable',
+                                style: TextStyle(
+                                  color: Colors.red[800],
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 16,
+                                ),
+                              ),
+                              SizedBox(height: 4),
+                              Text(
+                                'Cannot connect to the server. Try offline login if you have cached credentials.',
+                                style: TextStyle(
+                                  color: Colors.red[700],
+                                  fontSize: 12,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        IconButton(
+                          icon: Icon(Icons.refresh, color: Colors.red),
+                          onPressed: () {
+                            if (isSafe) {
+                              _checkServerConnection();
+                            }
+                          },
+                        ),
+                      ],
+                    ),
+                  ),
+
+                // Title and Logo
+                Row(
+                  children: [
+                    SizedBox(
+                      height: 42,
+                      width: 51,
+                      child: Image.asset('assets/edify2.png'),
+                    ),
+                    SizedBox(width: 10),
+                    Text(
+                      'edifyLMS',
+                      style: TextStyle(
+                        fontSize: 30,
+                        fontWeight: FontWeight.w400,
+                        color: AppColors.primaryAppbarBlack,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                  ],
+                ),
+                SizedBox(height: 40),
+
+                // Welcome text
+                Text(
+                  'Welcome back!',
+                  style: TextStyle(
+                    fontSize: 32,
+                    fontWeight: FontWeight.bold,
+                    color: AppColors.primaryAppbarBlack,
+                  ),
+                ),
+                SizedBox(height: 8),
+                Text(
+                  'Sign in to your account to continue',
+                  style: TextStyle(fontSize: 16, color: Colors.black54),
+                ),
+
+                SizedBox(height: 40),
+
+                // Provider error message
+                if (userProvider.error != null)
+                  Container(
+                    width: double.infinity,
+                    padding: EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: Colors.orange[50],
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.orange),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Icon(Icons.warning, color: Colors.orange, size: 20),
+                            SizedBox(width: 12),
+                            Text(
+                              'Login Issue',
+                              style: TextStyle(
+                                color: Colors.orange[800],
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ],
+                        ),
+                        SizedBox(height: 8),
+                        Text(
+                          userProvider.error!,
+                          style: TextStyle(
+                            color: Colors.orange[700],
+                            fontSize: 14,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+
+                if (userProvider.error != null) SizedBox(height: 20),
+
+                // Email field
+                Text(
+                  'Email',
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w500,
+                    color: AppColors.primaryBlack,
+                  ),
+                ),
+                SizedBox(height: 8),
+                TextFormField(
+                  cursorColor: AppColors.primaryOrange,
+                  controller: _emailController,
+                  decoration: InputDecoration(
+                    hintText: 'Enter your email',
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: BorderSide(color: Colors.grey[300]!),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: BorderSide(
+                        color: AppColors.primaryOrange,
+                        width: 2,
+                      ),
+                    ),
+                    filled: true,
+                    fillColor: Colors.grey[50],
+                    contentPadding: EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 16,
+                    ),
+                  ),
+                  keyboardType: TextInputType.emailAddress,
+                  validator: (value) {
+                    if (value == null || value.isEmpty) {
+                      return 'Please enter your email';
+                    }
+                    if (!value.contains('@') || !value.contains('.')) {
+                      return 'Please enter a valid email address';
+                    }
+                    return null;
+                  },
+                ),
+
+                SizedBox(height: 20),
+
+                // Password field
+                Text(
+                  'Password',
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w500,
+                    color: AppColors.primaryBlack,
+                  ),
+                ),
+                SizedBox(height: 8),
+                TextFormField(
+                  cursorColor: AppColors.primaryOrange,
+                  controller: _passwordController,
+                  decoration: InputDecoration(
+                    hintText: 'Enter your password',
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: BorderSide(color: Colors.grey[300]!),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: BorderSide(
+                        color: AppColors.primaryOrange,
+                        width: 2,
+                      ),
+                    ),
+                    filled: true,
+                    fillColor: Colors.grey[50],
+                    contentPadding: EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 16,
+                    ),
+                    suffixIcon: IconButton(
+                      icon: Icon(
+                        _obscurePassword
+                            ? Icons.visibility
+                            : Icons.visibility_off,
+                        color: Colors.grey,
+                      ),
+                      onPressed: () {
+                        if (isSafe) {
+                          setState(() {
+                            _obscurePassword = !_obscurePassword;
+                          });
+                        }
+                      },
+                    ),
+                  ),
+                  obscureText: _obscurePassword,
+                  validator: (value) {
+                    if (value == null || value.isEmpty) {
+                      return 'Please enter your password';
+                    }
+                    if (value.length < 6) {
+                      return 'Password must be at least 6 characters';
+                    }
+                    return null;
+                  },
+                ),
+
+                SizedBox(height: 24),
+
+                // Forgot password
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: TextButton(
+                    onPressed: () {
+                      if (isSafe) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text(
+                              'Forgot password feature coming soon!',
+                            ),
+                          ),
+                        );
+                      }
+                    },
+                    child: Text(
+                      'Forgot your Password?',
+                      style: TextStyle(
+                        color: AppColors.primaryOrange,
+                        fontWeight: FontWeight.w500,
+                        fontSize: 14,
+                      ),
+                    ),
+                  ),
+                ),
+
+                SizedBox(height: 24),
+
+                // Login button
+                SizedBox(
+                  width: double.infinity,
+                  height: 56,
+                  child: ElevatedButton(
+                    onPressed: userProvider.isLoading
+                        ? null
+                        : () async {
+                            if (_formKey.currentState!.validate()) {
+                              userProvider.clearError();
+
+                              final success = await userProvider.login(
+                                _emailController.text.trim(),
+                                _passwordController.text.trim(),
+                              );
+
+                              if (success && isSafe) {
+                                // Handle successful login
+                                _handleLoginSuccess();
+                              } else if (isSafe) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: Text(
+                                      userProvider.error ?? 'Login failed',
+                                    ),
+                                    backgroundColor: Colors.red,
+                                    duration: Duration(seconds: 5),
+                                  ),
+                                );
+                              }
+                            }
+                          },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: userProvider.isOffline
+                          ? Colors.blue
+                          : AppColors.primaryOrange,
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      elevation: 2,
+                    ),
+                    child: userProvider.isLoading
+                        ? SizedBox(
+                            height: 20,
+                            width: 20,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              valueColor: AlwaysStoppedAnimation<Color>(
+                                Colors.white,
+                              ),
+                            ),
+                          )
+                        : Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              if (userProvider.isOffline)
+                                Icon(Icons.wifi_off, size: 18),
+                              if (userProvider.isOffline) SizedBox(width: 8),
+                              Text(
+                                userProvider.isOffline
+                                    ? 'Sign In Offline'
+                                    : 'Sign In',
+                                style: TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ],
+                          ),
+                  ),
+                ),
+
+                SizedBox(height: 32),
+
+                // Sign up link
+                Center(
+                  child: GestureDetector(
+                    onTap: () {
+                      if (isSafe) {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (context) => RegisterPage(),
+                          ),
+                        );
+                      }
+                    },
+                    child: RichText(
+                      text: TextSpan(
+                        text: "Don't have an account? ",
+                        style: TextStyle(
+                          color: AppColors.primaryBlack,
+                          fontSize: 14,
+                        ),
+                        children: [
+                          TextSpan(
+                            text: 'Sign up',
+                            style: TextStyle(
+                              color: AppColors.primaryOrange,
+                              fontWeight: FontWeight.w600,
+                              fontSize: 14,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+
+
+

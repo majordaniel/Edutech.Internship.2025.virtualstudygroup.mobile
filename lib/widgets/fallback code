@@ -1,0 +1,1132 @@
+// providers/chat_provider.dart
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+import 'package:flutter/foundation.dart';
+import '../models/chat_message.dart';
+import '../services/chat_service.dart';
+
+class ChatProvider with ChangeNotifier {
+  List<ChatMessage> _messages = [];
+  bool _isLoading = false;
+  bool _isConnected = false;
+  bool _isSending = false;
+  bool _isTyping = false;
+  String? _typingUserName;
+  String? _error;
+  int? _currentGroupId;
+  String _connectionType = 'disconnected'; // websocket, polling, disconnected
+
+  // Track pending messages for optimistic updates
+  final Map<int, ChatMessage> _pendingMessages = {};
+  int _pendingMessageId = DateTime.now().millisecondsSinceEpoch;
+
+  // Stream subscriptions
+  StreamSubscription<Map<String, dynamic>>? _webSocketSubscription;
+  StreamSubscription<bool>? _connectionSubscription;
+  Timer? _connectionMonitor;
+
+  List<ChatMessage> get messages {
+    final allMessages = [..._messages];
+    allMessages.addAll(_pendingMessages.values);
+    allMessages.sort((a, b) => a.createdAt.compareTo(b.createdAt));
+    return allMessages;
+  }
+
+  bool get isLoading => _isLoading;
+  bool get isConnected => _isConnected;
+  bool get isSending => _isSending;
+  bool get isTyping => _isTyping;
+  String? get typingUserName => _typingUserName;
+  String? get error => _error;
+  int? get currentGroupId => _currentGroupId;
+  String get connectionType => _connectionType;
+  String get connectionStatus {
+    switch (_connectionType) {
+      case 'websocket':
+        return 'Live (WebSocket)';
+      case 'polling':
+        return 'Live (Polling)';
+      default:
+        return 'Offline';
+    }
+  }
+
+  ChatProvider() {
+    print('🔄 ChatProvider initialized');
+    _setupChatServiceListeners();
+  }
+
+  void _setupChatServiceListeners() {
+    // Listen for WebSocket messages
+    _webSocketSubscription = ChatService.webSocketMessages.listen((event) {
+      _handleWebSocketEvent(event);
+    });
+
+    // Listen for connection changes
+    _connectionSubscription = ChatService.connectionChanges.listen((connected) {
+      _handleConnectionChange(connected);
+    });
+
+    // Listen for polling messages
+    ChatService.onPollingMessages = (messages) {
+      _handlePollingMessages(messages);
+    };
+
+    // Monitor connection status every 5 seconds
+    _connectionMonitor = Timer.periodic(Duration(seconds: 5), (timer) {
+      _updateConnectionStatus();
+    });
+  }
+
+  void _updateConnectionStatus() {
+    final newStatus = ChatService.connectionStatus;
+    if (newStatus != _connectionType) {
+      _connectionType = newStatus;
+      _isConnected = newStatus != 'disconnected';
+      notifyListeners();
+      print('🔌 Connection status changed: $newStatus');
+    }
+  }
+
+  void _handleConnectionChange(bool connected) {
+    _isConnected = connected;
+    if (!connected) {
+      _isTyping = false;
+      _typingUserName = null;
+    }
+    _updateConnectionStatus();
+    print(connected ? '✅ WebSocket connected' : '🔌 WebSocket disconnected');
+  }
+
+  // Initialize chat with both WebSocket and Polling
+  Future<void> initializeChat(int groupId) async {
+    try {
+      _isLoading = true;
+      _error = null;
+      _currentGroupId = groupId;
+      notifyListeners();
+
+      print('🚀 Initializing chat for group: $groupId');
+
+      // Clear any pending messages when reinitializing
+      _pendingMessages.clear();
+
+      // Initialize both WebSocket and Polling
+      await ChatService.initializeChat(groupId);
+
+      // Load existing messages
+      await _loadExistingMessages(groupId);
+
+      _isLoading = false;
+      _updateConnectionStatus();
+      notifyListeners();
+
+      print('✅ Chat initialized successfully for group: $groupId');
+    } catch (e) {
+      _isLoading = false;
+      _error = e.toString();
+      notifyListeners();
+      print('❌ Error initializing chat: $e');
+    }
+  }
+
+  void _handleWebSocketEvent(Map<String, dynamic> event) {
+    try {
+      print('📨 WebSocket event: ${event['type']}');
+
+      switch (event['type']) {
+        case 'new_message':
+          _handleNewMessage(event['data']);
+          break;
+        case 'subscription_succeeded':
+          _handleSubscriptionSuccess(event['channel']);
+          break;
+        case 'connected':
+          _handleConnectionChange(true);
+          break;
+        case 'disconnected':
+          _handleConnectionChange(false);
+          break;
+        case 'typing_start':
+          _handleTypingStart(event['data']);
+          break;
+        case 'typing_stop':
+          _handleTypingStop(event['data']);
+          break;
+        case 'message_deleted':
+          _handleMessageDeleted(event['data']);
+          break;
+        case 'message_reacted':
+          _handleMessageReaction(event['data']);
+          break;
+        default:
+          print('🔔 Unhandled WebSocket event: ${event['type']}');
+      }
+    } catch (e) {
+      print('❌ Error handling WebSocket event: $e');
+    }
+  }
+
+  void _handleSubscriptionSuccess(String? channel) {
+    print('✅ Successfully subscribed to channel: $channel');
+    _isConnected = true;
+    _error = null;
+    _updateConnectionStatus();
+  }
+
+  void _handleNewMessage(dynamic messageData) {
+    try {
+      print('🆕 Handling new message: $messageData');
+
+      // Convert the message data to ChatMessage model
+      final newMessage = ChatMessage.fromJson(messageData);
+
+      // Remove any pending message with the same content (optimistic update confirmation)
+      _removePendingMessageByContent(newMessage.message ?? '');
+
+      // Check if message already exists (avoid duplicates)
+      if (!_messages.any(
+        (msg) => msg.id == newMessage.id || _isSameMessage(msg, newMessage),
+      )) {
+        _messages.add(newMessage);
+
+        // Sort messages by timestamp
+        _messages.sort((a, b) => a.createdAt.compareTo(b.createdAt));
+
+        notifyListeners();
+        print(
+          '✅ New message added: ${newMessage.message} (ID: ${newMessage.id})',
+        );
+      } else {
+        print('⚠️ Message already exists, skipping: ${newMessage.id}');
+      }
+    } catch (e) {
+      print('❌ Error handling new message: $e');
+      print('❌ Problematic message data: $messageData');
+    }
+  }
+
+  bool _isSameMessage(ChatMessage a, ChatMessage b) {
+    return a.message == b.message &&
+        a.userId == b.userId &&
+        a.createdAt == b.createdAt;
+  }
+
+  void _removePendingMessageByContent(String messageContent) {
+    final pendingKey = _pendingMessages.keys.firstWhere(
+      (key) => _pendingMessages[key]?.message == messageContent,
+      orElse: () => -1,
+    );
+
+    if (pendingKey != -1) {
+      _pendingMessages.remove(pendingKey);
+      print('✅ Confirmed optimistic update for: $messageContent');
+    }
+  }
+
+  void _handlePollingMessages(List<ChatMessage> newMessages) {
+    try {
+      print('📡 Polling received ${newMessages.length} messages');
+
+      bool hasNewMessages = false;
+
+      for (final newMessage in newMessages) {
+        // Remove pending messages that match
+        _removePendingMessageByContent(newMessage.message ?? '');
+
+        // Add to messages if not already present
+        if (!_messages.any(
+          (msg) => msg.id == newMessage.id || _isSameMessage(msg, newMessage),
+        )) {
+          _messages.add(newMessage);
+          hasNewMessages = true;
+          print('✅ Polling added message: ${newMessage.message}');
+        }
+      }
+
+      if (hasNewMessages) {
+        _messages.sort((a, b) => a.createdAt.compareTo(b.createdAt));
+        notifyListeners();
+      }
+    } catch (e) {
+      print('❌ Error handling polling messages: $e');
+    }
+  }
+
+  void _handleTypingStart(dynamic data) {
+    try {
+      final typingData = data is String ? json.decode(data) : data;
+      _isTyping = true;
+      _typingUserName = typingData['user_name'] ?? 'Someone';
+      notifyListeners();
+      print('⌨️ $_typingUserName is typing...');
+    } catch (e) {
+      print('❌ Error handling typing start: $e');
+    }
+  }
+
+  void _handleTypingStop(dynamic data) {
+    _isTyping = false;
+    _typingUserName = null;
+    notifyListeners();
+    print('⌨️ Typing stopped');
+  }
+
+  void _handleMessageDeleted(dynamic data) {
+    try {
+      final deleteData = data is String ? json.decode(data) : data;
+      final messageId = deleteData['message_id'];
+
+      _messages.removeWhere((msg) => msg.id == messageId);
+      _pendingMessages.remove(messageId);
+      notifyListeners();
+
+      print('🗑️ Message deleted: $messageId');
+    } catch (e) {
+      print('❌ Error handling message deletion: $e');
+    }
+  }
+
+  void _handleMessageReaction(dynamic data) {
+    try {
+      final reactionData = data is String ? json.decode(data) : data;
+      final messageId = reactionData['message_id'];
+      final emoji = reactionData['emoji'];
+      final userId = reactionData['user_id'];
+      final userName = reactionData['user_name'];
+
+      // Find the message and update reactions
+      final messageIndex = _messages.indexWhere((msg) => msg.id == messageId);
+      if (messageIndex != -1) {
+        // Update message with new reaction
+        final updatedMessage = _messages[messageIndex].copyWith();
+        // Add your reaction logic here
+        notifyListeners();
+        print('❤️ Reaction added: $emoji to message $messageId by $userName');
+      }
+    } catch (e) {
+      print('❌ Error handling message reaction: $e');
+    }
+  }
+
+  // Load existing messages via REST API
+  Future<void> _loadExistingMessages(int groupId) async {
+    try {
+      print('📥 Loading existing messages for group: $groupId');
+
+      final response = await ChatService.getGroupMessages(groupId);
+
+      if (response.status == 'success' && response.data != null) {
+        _messages = response.data!;
+        notifyListeners();
+        print('✅ Loaded ${_messages.length} existing messages');
+      } else {
+        print('❌ Failed to load messages: ${response.message}');
+      }
+    } catch (e) {
+      print('❌ Error loading existing messages: $e');
+    }
+  }
+
+  // Enhanced send message with optimistic updates and hybrid transport
+  Future<bool> sendMessage({
+    required int groupId,
+    required String message,
+    required int userId,
+    String messageType = 'text',
+    String? fileUrl,
+    String? fileType,
+    String? fileName,
+    double? fileSize,
+  }) async {
+    try {
+      _isSending = true;
+      notifyListeners();
+
+      print('📤 Sending message: $message');
+
+      // Create optimistic message
+      final optimisticMessage = ChatMessage(
+        id: _pendingMessageId++,
+        groupId: groupId,
+        userId: userId,
+        message: message,
+        createdAt: DateTime.now().toIso8601String(),
+        senderName: 'You',
+        messageType: messageType,
+        fileUrl: fileUrl,
+        fileType: fileType,
+        fileName: fileName,
+        fileSize: fileSize,
+        isPending: true, // Mark as pending
+      );
+
+      // Add to pending messages for optimistic update
+      _pendingMessages[optimisticMessage.id] = optimisticMessage;
+      notifyListeners();
+
+      bool success = false;
+
+      // Try hybrid send (WebSocket first, REST fallback)
+      success = await ChatService.sendMessageHybrid(
+        groupId: groupId,
+        message: message,
+        userId: userId,
+        messageType: messageType,
+        fileUrl: fileUrl,
+        fileType: fileType,
+        fileName: fileName,
+        fileSize: fileSize,
+      );
+
+      if (success) {
+        // For WebSocket, we'll wait for the server echo to remove the pending message
+        // For REST, the message is already confirmed
+        if (!ChatService.isWebSocketConnected) {
+          // REST API success - remove from pending immediately
+          _pendingMessages.remove(optimisticMessage.id);
+        }
+        // For WebSocket, the pending message will be removed when we receive the echo
+      } else {
+        // Mark as failed
+        _pendingMessages.remove(optimisticMessage.id);
+        final failedMessage = optimisticMessage.copyWith(isPending: false);
+        _messages.add(failedMessage);
+        _messages.sort((a, b) => a.createdAt.compareTo(b.createdAt));
+      }
+
+      _isSending = false;
+      notifyListeners();
+
+      if (success) {
+        print(
+          '✅ Message sent successfully via ${ChatService.connectionStatus}',
+        );
+        return true;
+      } else {
+        print('❌ Failed to send message');
+        return false;
+      }
+    } catch (e) {
+      _isSending = false;
+      _error = 'Failed to send message: $e';
+      notifyListeners();
+      print('❌ Error sending message: $e');
+      return false;
+    }
+  }
+
+  // Send file message with progress tracking
+  Future<bool> sendFileMessage({
+    required int groupId,
+    required File file,
+    required int userId,
+    String? customMessage,
+  }) async {
+    try {
+      _isSending = true;
+      notifyListeners();
+
+      print('📤 Sending file: ${file.path}');
+
+      // Create optimistic message
+      final fileName = file.path.split('/').last;
+      final optimisticMessage = ChatMessage(
+        id: _pendingMessageId++,
+        groupId: groupId,
+        userId: userId,
+        message: customMessage ?? 'Sending file...',
+        createdAt: DateTime.now().toIso8601String(),
+        senderName: 'You',
+        messageType: 'file',
+        hasFile: true,
+        fileName: fileName,
+        isPending: true,
+      );
+
+      // Add to pending messages
+      _pendingMessages[optimisticMessage.id] = optimisticMessage;
+      notifyListeners();
+
+      // Upload file
+      final uploadResponse = await ChatService.uploadFileMultipart(
+        file,
+        groupId: groupId,
+        customMessage: customMessage,
+      );
+
+      if (uploadResponse.isSuccess) {
+        // Remove pending message
+        _pendingMessages.remove(optimisticMessage.id);
+
+        // Send the actual message with file URL
+        final success = await sendMessage(
+          groupId: groupId,
+          message: customMessage ?? 'Shared a file: $fileName',
+          userId: userId,
+          messageType: 'file',
+          fileUrl: uploadResponse.data,
+          fileName: fileName,
+        );
+
+        _isSending = false;
+        notifyListeners();
+        return success;
+      } else {
+        // Mark as failed
+        _pendingMessages.remove(optimisticMessage.id);
+        final failedMessage = optimisticMessage.copyWith(
+          isPending: false,
+          message: 'Failed to upload file',
+        );
+        _messages.add(failedMessage);
+
+        _isSending = false;
+        notifyListeners();
+        return false;
+      }
+    } catch (e) {
+      _isSending = false;
+      _error = 'Failed to send file: $e';
+      notifyListeners();
+      print('❌ Error sending file message: $e');
+      return false;
+    }
+  }
+
+  // Send typing indicators
+  void sendTypingStart(int groupId, int userId, String userName) {
+    try {
+      ChatService.sendTypingIndicator(true, groupId, userId, userName);
+    } catch (e) {
+      print('❌ Error sending typing start: $e');
+    }
+  }
+
+  void sendTypingStop(int groupId, int userId) {
+    try {
+      ChatService.sendTypingIndicator(false, groupId, userId, '');
+    } catch (e) {
+      print('❌ Error sending typing stop: $e');
+    }
+  }
+
+  // Add message locally (for optimistic updates)
+  void addMessage(ChatMessage message) {
+    if (!_messages.any((msg) => msg.id == message.id)) {
+      _messages.add(message);
+      _messages.sort((a, b) => a.createdAt.compareTo(b.createdAt));
+      notifyListeners();
+      print('➕ Added local message: ${message.message}');
+    }
+  }
+
+  // Remove message (for failed uploads, etc.)
+  void removeMessage(int messageId) {
+    _messages.removeWhere((msg) => msg.id == messageId);
+    _pendingMessages.remove(messageId);
+    notifyListeners();
+    print('➖ Removed message: $messageId');
+  }
+
+  // Update message (for reactions, edits, etc.)
+  void updateMessage(ChatMessage updatedMessage) {
+    final index = _messages.indexWhere((msg) => msg.id == updatedMessage.id);
+    if (index != -1) {
+      _messages[index] = updatedMessage;
+      notifyListeners();
+      print('✏️ Updated message: ${updatedMessage.id}');
+    }
+  }
+
+  // Clear all messages
+  void clearMessages() {
+    _messages.clear();
+    _pendingMessages.clear();
+    notifyListeners();
+    print('🧹 Cleared all messages');
+  }
+
+  // Get message by ID
+  ChatMessage? getMessageById(int messageId) {
+    return _messages.firstWhere((msg) => msg.id == messageId);
+  }
+
+  // Message reactions
+  Future<bool> reactToMessage({
+    required int messageId,
+    required String emoji,
+    required int userId,
+    required String userName,
+  }) async {
+    try {
+      print('❤️ Reacting to message $messageId with $emoji');
+
+      // Update locally immediately
+      final messageIndex = _messages.indexWhere((msg) => msg.id == messageId);
+      if (messageIndex != -1) {
+        // Add your reaction logic here
+        notifyListeners();
+      }
+
+      // Your actual API call would go here
+      return true;
+    } catch (e) {
+      print('❌ Error reacting to message: $e');
+      return false;
+    }
+  }
+
+  // Delete message
+  Future<bool> deleteMessage(int messageId) async {
+    try {
+      print('🗑️ Deleting message: $messageId');
+
+      // Remove locally immediately
+      removeMessage(messageId);
+
+      // Your actual API call would go here
+      return true;
+    } catch (e) {
+      print('❌ Error deleting message: $e');
+      return false;
+    }
+  }
+
+  // Pin message
+  Future<bool> pinMessage(int messageId) async {
+    try {
+      print('📌 Pinning message: $messageId');
+
+      // Update locally
+      final messageIndex = _messages.indexWhere((msg) => msg.id == messageId);
+      if (messageIndex != -1) {
+        final updatedMessage = _messages[messageIndex].copyWith(isPinned: true);
+        _messages[messageIndex] = updatedMessage;
+        notifyListeners();
+      }
+
+      return true;
+    } catch (e) {
+      print('❌ Error pinning message: $e');
+      return false;
+    }
+  }
+
+  // Reconnect manually
+  Future<void> reconnect() async {
+    if (_currentGroupId != null) {
+      print('🔄 Manual reconnect requested');
+      await initializeChat(_currentGroupId!);
+    }
+  }
+
+  // Refresh messages manually
+  Future<void> refreshMessages() async {
+    if (_currentGroupId != null) {
+      print('🔄 Manual refresh requested');
+      await _loadExistingMessages(_currentGroupId!);
+    }
+  }
+
+  // Debug method
+  void debugState() {
+    print('🔍 ChatProvider Debug:');
+    print('  - Messages count: ${_messages.length}');
+    print('  - Pending messages: ${_pendingMessages.length}');
+    print('  - Connection type: $_connectionType');
+    print('  - Connected: $_isConnected');
+    print('  - Loading: $_isLoading');
+    print('  - Sending: $_isSending');
+    print('  - Typing: $_isTyping');
+    print('  - Typing User: $_typingUserName');
+    print('  - Error: $_error');
+    print('  - Current Group: $_currentGroupId');
+
+    // Print last 3 messages
+    final allMessages = messages;
+    for (var i = allMessages.length - 3; i < allMessages.length; i++) {
+      if (i >= 0) {
+        final msg = allMessages[i];
+        final status = msg.isPending == true ? '⏳' : '✅';
+        print(
+          '  - $status Message ${i + 1}: "${msg.message}" (${msg.senderName})',
+        );
+      }
+    }
+  }
+
+  // Cleanup
+  @override
+  void dispose() {
+    print('🔄 Disposing ChatProvider');
+
+    _webSocketSubscription?.cancel();
+    _connectionSubscription?.cancel();
+    _connectionMonitor?.cancel();
+
+    ChatService.disconnect();
+
+    super.dispose();
+  }
+}
+
+
+
+
+
+
+
+
+
+
+// services/chat_service.dart
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+import 'package:edify_app/services/chat_websocket_manager.dart';
+import 'package:http/http.dart' as http;
+import 'api_service.dart';
+import '../models/chat_message.dart';
+import '../models/api_response.dart';
+import 'package:http_parser/http_parser.dart';
+
+// services/chat_service.dart
+class ChatService {
+  static final ChatWebSocketManager _webSocketManager = ChatWebSocketManager();
+
+  // Polling variables
+  static Timer? _pollingTimer;
+  static bool _isPolling = false;
+  static int? _currentPollingGroupId;
+  static DateTime? _lastMessageTimestamp;
+  static final Duration _pollingInterval = Duration(seconds: 3);
+
+  // Stream getters for the provider
+  static Stream<Map<String, dynamic>> get webSocketMessages =>
+      _webSocketManager.onMessage;
+  static Stream<bool> get connectionChanges =>
+      _webSocketManager.onConnectionChange;
+  static Stream<String> get webSocketErrors => _webSocketManager.onError;
+
+  static ChatWebSocketManager get webSocketManager => _webSocketManager;
+
+  // Initialize with both WebSocket and Polling
+  static Future<void> initializeChat(int groupId) async {
+    try {
+      print('🚀 Initializing chat for group: $groupId');
+
+      // Start WebSocket first
+      await _webSocketManager.connectToGroup(groupId);
+
+      // Start polling as backup
+      _startPolling(groupId);
+
+      print('✅ Chat initialized with WebSocket + Polling backup');
+    } catch (e) {
+      print('❌ WebSocket failed, relying on polling: $e');
+      _startPolling(groupId);
+    }
+  }
+
+  // Start polling for messages
+  static void _startPolling(int groupId) {
+    _stopPolling(); // Stop any existing polling
+
+    _currentPollingGroupId = groupId;
+    _isPolling = true;
+
+    print(
+      '🔄 Starting polling for group: $groupId (interval: ${_pollingInterval.inSeconds}s)',
+    );
+
+    // Immediate first poll
+    _pollForMessages();
+
+    // Set up periodic polling
+    _pollingTimer = Timer.periodic(_pollingInterval, (timer) {
+      if (_isPolling) {
+        _pollForMessages();
+      }
+    });
+  }
+
+  // Stop polling
+  static void _stopPolling() {
+    _pollingTimer?.cancel();
+    _pollingTimer = null;
+    _isPolling = false;
+    _currentPollingGroupId = null;
+    print('🛑 Stopped polling');
+  }
+
+  // Poll for new messages
+  static Future<void> _pollForMessages() async {
+    if (_currentPollingGroupId == null) return;
+
+    try {
+      // print('📡 Polling for new messages...');
+
+      final response = await getGroupMessages(_currentPollingGroupId!);
+
+      if (response.status == 'success' && response.data != null) {
+        final messages = response.data!;
+
+        if (messages.isNotEmpty) {
+          final latestMessage = messages.last;
+          final messageTime = DateTime.parse(latestMessage.createdAt);
+
+          // Only notify if we have new messages
+          if (_lastMessageTimestamp == null ||
+              messageTime.isAfter(_lastMessageTimestamp!)) {
+            _lastMessageTimestamp = messageTime;
+
+            // Notify listeners about new messages
+            _onPollingMessagesReceived(messages);
+
+            // print('✅ Polling found ${messages.length} messages');
+          }
+        }
+      }
+    } catch (e) {
+      print('❌ Polling error: $e');
+    }
+  }
+
+  // Callback for when polling receives messages
+  static void Function(List<ChatMessage>)? onPollingMessages;
+
+  static void _onPollingMessagesReceived(List<ChatMessage> messages) {
+    onPollingMessages?.call(messages);
+  }
+
+  // Get connection status
+  static bool get isWebSocketConnected => _webSocketManager.isConnected;
+  static bool get isPollingActive => _isPolling;
+  static String get connectionStatus {
+    if (_webSocketManager.isConnected) return 'websocket';
+    if (_isPolling) return 'polling';
+    return 'disconnected';
+  }
+
+  // Enhanced send message that tries both methods
+  static Future<bool> sendMessageHybrid({
+    required int groupId,
+    required String message,
+    required int userId,
+    String messageType = 'text',
+    String? fileUrl,
+    String? fileType,
+    String? fileName,
+    double? fileSize,
+  }) async {
+    try {
+      // Try WebSocket first
+      if (_webSocketManager.isConnected) {
+        sendMessageViaWebSocket(
+          groupId: groupId,
+          message: message,
+          userId: userId,
+          messageType: messageType,
+          fileUrl: fileUrl,
+          fileType: fileType,
+          fileName: fileName,
+          fileSize: fileSize,
+        );
+        return true;
+      } else {
+        // Fall back to REST API
+        final response = await sendMessage(
+          groupId: groupId,
+          message: message,
+          userId: userId,
+          messageType: messageType,
+          fileUrl: fileUrl,
+          fileType: fileType,
+          fileName: fileName,
+          fileSize: fileSize,
+        );
+        return response.status == 'success';
+      }
+    } catch (e) {
+      print('❌ Hybrid send failed: $e');
+      return false;
+    }
+  }
+
+  // Cleanup
+  static Future<void> disconnect() async {
+    print('🔌 Disconnecting chat service...');
+    _stopPolling();
+    await _webSocketManager.disconnect();
+  }
+
+  // Your existing methods below...
+  static Future<ApiResponse<List<ChatMessage>>> getGroupMessages(
+    int groupId,
+  ) async {
+    try {
+      final response = await ApiService.get('groups/$groupId/messages');
+
+      if (response is List) {
+        final messages = response
+            .map((messageData) {
+              try {
+                final message = ChatMessage.fromJson(messageData);
+                return message;
+              } catch (e) {
+                print('❌ Skipping invalid message: $e');
+                return null;
+              }
+            })
+            .where((message) => message != null)
+            .cast<ChatMessage>()
+            .toList();
+
+        messages.sort((a, b) => a.createdAt.compareTo(b.createdAt));
+
+        return ApiResponse<List<ChatMessage>>(
+          status: 'success',
+          message: 'Success',
+          data: messages,
+        );
+      } else if (response is Map<String, dynamic>) {
+        final data = response['data'];
+        if (data is List) {
+          final messages = data
+              .map((messageData) {
+                try {
+                  return ChatMessage.fromJson(messageData);
+                } catch (e) {
+                  print('❌ Skipping invalid message: $e');
+                  return null;
+                }
+              })
+              .where((message) => message != null)
+              .cast<ChatMessage>()
+              .toList();
+
+          messages.sort((a, b) => a.createdAt.compareTo(b.createdAt));
+
+          return ApiResponse<List<ChatMessage>>(
+            status: response['status']?.toString() ?? 'success',
+            message: response['message']?.toString() ?? 'Success',
+            data: messages,
+          );
+        }
+      }
+
+      return ApiResponse<List<ChatMessage>>(
+        status: 'error',
+        message: 'Unexpected response format',
+        data: [],
+      );
+    } catch (e) {
+      print('❌ ChatService Error: $e');
+      return ApiResponse<List<ChatMessage>>(
+        status: 'error',
+        message: e.toString(),
+        data: [],
+      );
+    }
+  }
+
+  static Future<ApiResponse<ChatMessage>> sendMessage({
+    required int groupId,
+    required String message,
+    required int userId,
+    String messageType = 'text',
+    String? fileUrl,
+    String? fileType,
+    String? fileName,
+    double? fileSize,
+  }) async {
+    try {
+      final Map<String, dynamic> requestBody = {
+        'user_id': userId,
+        'message': message,
+        'message_type': messageType,
+      };
+
+      if (fileUrl != null) requestBody['file_url'] = fileUrl;
+      if (fileType != null) requestBody['file_type'] = fileType;
+      if (fileName != null) requestBody['file_name'] = fileName;
+      if (fileSize != null) requestBody['file_size'] = fileSize;
+
+      final response = await ApiService.post(
+        'groups/$groupId/messages',
+        requestBody,
+      );
+
+      if (response is Map<String, dynamic>) {
+        final status = response['status']?.toString();
+
+        if (status == 'success') {
+          final data = response['data'];
+          if (data is Map<String, dynamic>) {
+            final chatMessage = ChatMessage.fromJson(data);
+            return ApiResponse<ChatMessage>(
+              status: 'success',
+              message: 'Message sent',
+              data: chatMessage,
+            );
+          }
+        }
+      }
+
+      // Fallback
+      final fallbackMessage = ChatMessage(
+        id: DateTime.now().millisecondsSinceEpoch,
+        groupId: groupId,
+        userId: userId,
+        message: message,
+        createdAt: DateTime.now().toIso8601String(),
+        senderName: 'You',
+        hasFile: fileUrl != null,
+        fileUrl: fileUrl,
+        fileType: fileType,
+        fileName: fileName,
+        fileSize: fileSize,
+      );
+
+      return ApiResponse<ChatMessage>(
+        status: 'success',
+        message: 'Message sent',
+        data: fallbackMessage,
+      );
+    } catch (e) {
+      print('❌ Send message API error: $e');
+      return ApiResponse<ChatMessage>(
+        status: 'error',
+        message: 'Failed to send: $e',
+        data: null,
+      );
+    }
+  }
+
+  static void sendMessageViaWebSocket({
+    required int groupId,
+    required String message,
+    required int userId,
+    String messageType = 'text',
+    String? fileUrl,
+    String? fileType,
+    String? fileName,
+    double? fileSize,
+  }) {
+    _webSocketManager.sendChatMessage(
+      groupId: groupId,
+      message: message,
+      userId: userId,
+      messageType: messageType,
+      fileUrl: fileUrl,
+      fileType: fileType,
+      fileName: fileName,
+      fileSize: fileSize,
+    );
+  }
+
+  static void sendTypingIndicator(
+    bool isTyping,
+    int groupId,
+    int userId,
+    String userName,
+  ) {
+    _webSocketManager.sendTypingIndicator(isTyping, userId, userName);
+  }
+
+  // Your existing file upload methods...
+  static Future<ApiResponse<String>> uploadFileMultipart(
+    File file, {
+    required int groupId,
+    String? customMessage,
+  }) async {
+    // ... your existing upload code
+    try {
+      final uri = Uri.parse('${ApiService.baseUrl}/groups/file/upload');
+      var request = http.MultipartRequest('POST', uri);
+
+      final headers = await ApiService.getHeaders();
+      request.headers.addAll(Map<String, String>.from(headers));
+      request.headers.remove('Content-Type');
+
+      request.files.add(
+        await http.MultipartFile.fromPath(
+          'file',
+          file.path,
+          filename: file.path.split('/').last,
+        ),
+      );
+
+      request.fields['group_id'] = groupId.toString();
+
+      if (customMessage != null) {
+        request.fields['message'] = customMessage;
+      } else {
+        final fileName = file.path.split('/').last;
+        final fileType = _getMimeType(fileName);
+        if (fileType.startsWith('image/')) {
+          request.fields['message'] = 'Shared an image';
+        } else if (fileType.startsWith('video/')) {
+          request.fields['message'] = 'Shared a video';
+        } else if (fileType.startsWith('audio/')) {
+          request.fields['message'] = 'Shared an audio file';
+        } else {
+          request.fields['message'] = 'Shared a file';
+        }
+      }
+
+      var response = await request.send();
+      var responseData = await response.stream.bytesToString();
+
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        final jsonResponse = json.decode(responseData);
+        final message =
+            jsonResponse['message']?.toString() ?? 'File uploaded successfully';
+
+        return ApiResponse<String>(
+          status: 'success',
+          message: message,
+          data: 'upload_success',
+        );
+      }
+
+      return ApiResponse<String>(
+        status: 'error',
+        message: 'Upload failed with status ${response.statusCode}',
+        data: null,
+      );
+    } catch (e) {
+      print('❌ Multipart upload error: $e');
+      return ApiResponse<String>(
+        status: 'error',
+        message: 'Multipart upload failed: $e',
+        data: null,
+      );
+    }
+  }
+
+  static String _getMimeType(String fileName) {
+    final extension = fileName.toLowerCase().split('.').last;
+    final mimeTypes = {
+      'jpg': 'image/jpeg',
+      'jpeg': 'image/jpeg',
+      'png': 'image/png',
+      'gif': 'image/gif',
+      'pdf': 'application/pdf',
+      'doc': 'application/msword',
+      'docx':
+          'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'xls': 'application/vnd.ms-excel',
+      'xlsx':
+          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'mp3': 'audio/mpeg',
+      'wav': 'audio/wav',
+      'mp4': 'video/mp4',
+      'mov': 'video/quicktime',
+      'txt': 'text/plain',
+    };
+    return mimeTypes[extension] ?? 'application/octet-stream';
+  }
+}

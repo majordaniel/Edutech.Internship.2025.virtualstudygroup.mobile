@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:edify_app/screens/add_participant.dart';
 
 class CustomButtons extends StatelessWidget {
   final String buttonTitle;
@@ -20,6 +19,7 @@ class CustomButtons extends StatelessWidget {
     required this.textColor,
     required this.textSize,
     required this.textWeight,
+    required void Function() onPressed,
   });
 
   @override
@@ -33,10 +33,13 @@ class CustomButtons extends StatelessWidget {
         padding: EdgeInsets.symmetric(vertical: 12, horizontal: 21),
       ),
       onPressed: () {
-        Navigator.push(
-          context,
-          MaterialPageRoute(builder: (context) => AddParticipantPage()),
-        );
+        // Navigator.push(
+        //   context,
+        //   MaterialPageRoute(
+        //     builder: (context) =>
+        //         AddParticipantPage(groupId: 1, groupName: 'Group Name'),
+        //   ),
+        // );
       },
       child: Text(
         buttonTitle,

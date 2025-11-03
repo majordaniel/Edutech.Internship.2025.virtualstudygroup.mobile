@@ -14,6 +14,12 @@ class AppColors {
   static const primaryReadChatBlue = Color(0xFF5A6A9D);
   static const primaryUnread = Color(0xFF979797);
   static const primaryGreyLight = Color(0xFFF8F8F8);
+  static const primaryLightGreyJoinR = Color(0xFFF9FAFB);
   static const primaryStrongBlack900 = Color(0xFF0A0D14);
   static const primaryConfirmBlue = Color(0xFF111827);
+  static const primaryDashboardPreview = Color(0xFFE3E3E3);
+  static const primaryDropShadow = Color(0xFF0000000F);
+  static const primaryGreyDarkActive = Color(0xFF535353);
+  static const primaryApproved = Color(0xFF079129);
+  static const primaryRejected = Color(0xFF920202);
 }
