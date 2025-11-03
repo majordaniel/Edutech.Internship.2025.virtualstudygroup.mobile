@@ -49,7 +49,9 @@ class ChatroomUnread extends StatelessWidget {
                         ),
                       ),
                     ),
-                    onPressed: () {},
+                    onPressed: () {
+                      // Navigator.pop(context);
+                    },
                     child: CustomTexts(
                       title: 'Chat',
                       textColor: AppColors.primaryUnread,

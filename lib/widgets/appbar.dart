@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:edify_app/widgets/icon_button.dart';
 import 'package:edify_app/widgets/texts.dart';
 import 'package:edify_app/constants/colors.dart';
 
@@ -27,14 +26,6 @@ class CustomAppbar extends StatelessWidget {
               textAlignment: AlignmentGeometry.centerLeft,
             ),
           ],
-        ),
-        CustomIconButton(
-          buttonColor: AppColors.primaryOrange,
-          iconColor: AppColors.primaryWhiteIcon,
-          buttonPaddingWidth: 12.81,
-          buttonPaddingheight: 7.09,
-          buttonBorderRadius: 8.75,
-          iconSize: 24.24,
         ),
       ],
     );

@@ -1,0 +1,2803 @@
+So there a flutter project I'm working on, you've been a great help on that but there are stillsome things we still haven't implemented. I will share the cofe snippet with you 
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:http/http.dart' as http;
+
+import 'api_service.dart';
+import '../models/chat_message.dart';
+import '../models/api_response.dart';
+
+class ChatService {
+  static Future<ApiResponse<List<ChatMessage>>> getGroupMessages(
+    int groupId,
+  ) async {
+    try {
+      final response = await ApiService.get('groups/$groupId/messages');
+
+      if (response is List) {
+        final messages = response
+            .map((messageData) {
+              try {
+                return ChatMessage.fromJson(messageData);
+              } catch (e) {
+                print('❌ Skipping invalid message: $e');
+                return null;
+              }
+            })
+            .where((message) => message != null)
+            .cast<ChatMessage>()
+            .toList();
+
+        // ✅ FIX: Sort by creation time (OLDEST first for chat - bottom is newest)
+        messages.sort((a, b) => a.createdAt.compareTo(b.createdAt));
+
+        return ApiResponse<List<ChatMessage>>(
+          status: 'success',
+          message: 'Success',
+          data: messages,
+        );
+      } else if (response is Map<String, dynamic>) {
+        final data = response['data'];
+        if (data is List) {
+          final messages = data
+              .map((messageData) {
+                try {
+                  return ChatMessage.fromJson(messageData);
+                } catch (e) {
+                  print('❌ Skipping invalid message: $e');
+                  return null;
+                }
+              })
+              .where((message) => message != null)
+              .cast<ChatMessage>()
+              .toList();
+
+          // ✅ FIX: Sort by creation time (OLDEST first for chat - bottom is newest)
+          messages.sort((a, b) => a.createdAt.compareTo(b.createdAt));
+
+          return ApiResponse<List<ChatMessage>>(
+            status: response['status']?.toString() ?? 'success',
+            message: response['message']?.toString() ?? 'Success',
+            data: messages,
+          );
+        }
+      }
+
+      return ApiResponse<List<ChatMessage>>(
+        status: 'error',
+        message: 'Unexpected response format',
+        data: [],
+      );
+    } catch (e) {
+      print('❌ ChatService Error: $e');
+      return ApiResponse<List<ChatMessage>>(
+        status: 'error',
+        message: e.toString(),
+        data: [],
+      );
+    }
+  }
+
+  // In ChatService - Use the same pattern as other ApiService calls
+  static Future<ApiResponse<String>> uploadFile(File file) async {
+    try {
+      print('📤 Uploading file: ${file.path}');
+
+      // Read file as bytes
+      final bytes = await file.readAsBytes();
+      final base64File = base64Encode(bytes);
+      final fileName = file.path.split('/').last;
+      final fileSize = bytes.length;
+
+      // Use the existing ApiService.post method that already handles headers
+      final response = await ApiService.post('upload', {
+        'file_name': fileName,
+        'file_data': base64File,
+        'file_size': fileSize,
+        'file_type': _getMimeType(fileName),
+      });
+
+      print('📡 File upload response: $response');
+
+      if (response is Map<String, dynamic>) {
+        final status = response['status']?.toString();
+
+        if (status == 'success') {
+          final fileUrl =
+              response['file_url']?.toString() ??
+              response['url']?.toString() ??
+              response['data']?.toString();
+
+          if (fileUrl != null) {
+            print('✅ File uploaded successfully: $fileUrl');
+            return ApiResponse<String>(
+              status: 'success',
+              message: 'File uploaded successfully',
+              data: fileUrl,
+            );
+          }
+        } else {
+          return ApiResponse<String>(
+            status: 'error',
+            message: response['message']?.toString() ?? 'Upload failed',
+            data: null,
+          );
+        }
+      }
+
+      return ApiResponse<String>(
+        status: 'error',
+        message: 'Invalid response format',
+        data: null,
+      );
+    } catch (e) {
+      print('❌ File upload error: $e');
+      return ApiResponse<String>(
+        status: 'error',
+        message: 'Upload failed: $e',
+        data: null,
+      );
+    }
+  }
+
+  // Helper method to get MIME type
+  static String _getMimeType(String fileName) {
+    final extension = fileName.toLowerCase().split('.').last;
+
+    final mimeTypes = {
+      'jpg': 'image/jpeg',
+      'jpeg': 'image/jpeg',
+      'png': 'image/png',
+      'gif': 'image/gif',
+      'pdf': 'application/pdf',
+      'doc': 'application/msword',
+      'docx':
+          'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'xls': 'application/vnd.ms-excel',
+      'xlsx':
+          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'mp3': 'audio/mpeg',
+      'wav': 'audio/wav',
+      'mp4': 'video/mp4',
+      'mov': 'video/quicktime',
+      'txt': 'text/plain',
+    };
+
+    return mimeTypes[extension] ?? 'application/octet-stream';
+  }
+
+  // Send a message to a group
+  static Future<ApiResponse<ChatMessage>> sendMessage({
+    required int groupId,
+    required String message,
+    required int userId,
+    String messageType = 'text',
+    String? fileUrl,
+    String? fileType,
+    String? fileName,
+    double? fileSize,
+  }) async {
+    try {
+      final Map<String, dynamic> requestBody = {
+        'user_id': userId,
+        'message': message,
+        'message_type': messageType,
+      };
+
+      // Add file information if available
+      if (fileUrl != null) {
+        requestBody['file_url'] = fileUrl;
+      }
+      if (fileType != null) {
+        requestBody['file_type'] = fileType;
+      }
+      if (fileName != null) {
+        requestBody['file_name'] = fileName;
+      }
+      if (fileSize != null) {
+        requestBody['file_size'] = fileSize;
+      }
+
+      final response = await ApiService.post(
+        'groups/$groupId/messages',
+        requestBody,
+      );
+
+      if (response is Map<String, dynamic>) {
+        final status = response['status']?.toString();
+
+        if (status == 'success') {
+          final data = response['data'];
+          if (data is Map<String, dynamic>) {
+            final chatMessage = ChatMessage.fromJson(data);
+            return ApiResponse<ChatMessage>(
+              status: 'success',
+              message: 'Message sent',
+              data: chatMessage,
+            );
+          }
+        }
+      }
+
+      // Fallback - create local message with file info
+      final fallbackMessage = ChatMessage(
+        id: DateTime.now().millisecondsSinceEpoch,
+        groupId: groupId,
+        userId: userId,
+        message: message,
+        createdAt: DateTime.now().toIso8601String(),
+        senderName: 'You',
+        hasFile: fileUrl != null,
+        fileUrl: fileUrl,
+        fileType: fileType,
+        fileName: fileName,
+        fileSize: fileSize,
+      );
+
+      return ApiResponse<ChatMessage>(
+        status: 'success',
+        message: 'Message sent',
+        data: fallbackMessage,
+      );
+    } catch (e) {
+      print('❌ Send message API error: $e');
+      return ApiResponse<ChatMessage>(
+        status: 'error',
+        message: 'Failed to send: $e',
+        data: null,
+      );
+    }
+  }
+}
+
+
+import 'package:flutter/foundation.dart';
+import '../services/chat_service.dart';
+import '../models/chat_message.dart';
+
+class ChatProvider with ChangeNotifier {
+  List<ChatMessage> _messages = [];
+  bool _isLoading = false;
+  String? _error;
+  bool _isSending = false;
+
+  List<ChatMessage> get messages => _messages;
+  bool get isLoading => _isLoading;
+  String? get error => _error;
+  bool get isSending => _isSending;
+
+  // Load messages for a group
+  Future<void> loadGroupMessages(int groupId) async {
+    if (_isLoading) return;
+
+    _isLoading = true;
+    _error = null;
+
+    try {
+      final response = await ChatService.getGroupMessages(groupId);
+
+      if (response.isSuccess) {
+        final newMessages = response.data ?? [];
+
+        // Only update if messages actually changed
+        if (!_areMessagesEqual(_messages, newMessages)) {
+          _messages = newMessages;
+          print('🔄 Messages updated: ${_messages.length} total');
+        }
+        _error = null;
+      } else {
+        _error = response.message;
+      }
+    } catch (e) {
+      _error = e.toString();
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+
+  // Send a message
+  // In ChatProvider - update the sendMessage method
+  Future<bool> sendMessage({
+    required int groupId,
+    required String message,
+    required int userId,
+    String messageType = 'text',
+    String? fileUrl,
+    String? fileType,
+    String? fileName,
+    double? fileSize,
+  }) async {
+    if (_isSending) return false;
+
+    _isSending = true;
+    _error = null;
+    notifyListeners();
+
+    try {
+      final response = await ChatService.sendMessage(
+        groupId: groupId,
+        message: message,
+        userId: userId,
+        messageType: messageType,
+        fileUrl: fileUrl,
+        fileType: fileType,
+        fileName: fileName,
+        fileSize: fileSize,
+      );
+
+      if (response.isSuccess && response.data != null) {
+        // Add the new message to the list
+        _messages.add(response.data!);
+        _error = null;
+        _isSending = false;
+        notifyListeners();
+        return true;
+      } else {
+        _error = response.message ?? 'Failed to send message';
+        _isSending = false;
+        notifyListeners();
+        return false;
+      }
+    } catch (e) {
+      _error = e.toString();
+      _isSending = false;
+      notifyListeners();
+      return false;
+    }
+  }
+
+  // Helper to check if messages are the same
+  bool _areMessagesEqual(List<ChatMessage> list1, List<ChatMessage> list2) {
+    if (list1.length != list2.length) return false;
+
+    for (int i = 0; i < list1.length; i++) {
+      if (list1[i].id != list2[i].id) return false;
+    }
+
+    return true;
+  }
+
+  // Add a message locally (for optimistic updates)
+  void addMessage(ChatMessage message) {
+    _messages.add(message);
+    notifyListeners();
+  }
+
+  // Remove a message
+  void removeMessage(int messageId) {
+    _messages.removeWhere((msg) => msg.id == messageId);
+    notifyListeners();
+  }
+
+  // Clear error
+  void clearError() {
+    _error = null;
+    notifyListeners();
+  }
+
+  // Clear all messages
+  void clearMessages() {
+    _messages.clear();
+    notifyListeners();
+  }
+}
+
+
+import 'package:flutter/material.dart';
+
+class ChatMessage {
+  final int id;
+  final int groupId;
+  final int userId;
+  final String? message;
+  final String createdAt;
+  final String senderName;
+  final String senderAvatar;
+  final bool hasCall;
+  final bool hasFile;
+  final bool hasMessage;
+  final String? fileUrl;
+  final String? fileType;
+  final String? fileName;
+  final double? fileSize;
+
+  ChatMessage({
+    required this.id,
+    required this.groupId,
+    required this.userId,
+    required this.message,
+    required this.createdAt,
+    this.senderName = 'Unknown User',
+    this.senderAvatar = '',
+    this.hasCall = false,
+    this.hasFile = false,
+    this.hasMessage = true,
+    this.fileUrl,
+    this.fileType,
+    this.fileName,
+    this.fileSize,
+  });
+
+  factory ChatMessage.fromJson(Map<String, dynamic> json) {
+    // Extract sender info from user object or direct fields
+    String senderName = 'Unknown User';
+    String senderAvatar = '';
+
+    // Check if user data is available
+    if (json['user'] is Map<String, dynamic>) {
+      final user = json['user'];
+      final firstName =
+          user['first_name']?.toString() ?? user['firstName']?.toString() ?? '';
+      final lastName =
+          user['last_name']?.toString() ?? user['lastName']?.toString() ?? '';
+      senderName = '$firstName $lastName'.trim();
+      if (senderName.isEmpty) senderName = 'Unknown User';
+
+      senderAvatar =
+          user['avatar_url']?.toString() ??
+          user['avatarUrl']?.toString() ??
+          user['avatar']?.toString() ??
+          '';
+    } else {
+      // Fallback to direct fields
+      final firstName =
+          json['first_name']?.toString() ?? json['firstName']?.toString() ?? '';
+      final lastName =
+          json['last_name']?.toString() ?? json['lastName']?.toString() ?? '';
+      senderName = '$firstName $lastName'.trim();
+      if (senderName.isEmpty) senderName = 'Unknown User';
+    }
+
+    // Determine message type and file info
+    final messageType = json['message_type']?.toString() ?? 'text';
+    final bool hasCall = messageType == 'call';
+    final bool hasFile =
+        messageType == 'file' ||
+        json['file_url'] != null ||
+        json['file_type'] != null;
+    final bool hasMessage =
+        json['message'] != null && json['message'].toString().isNotEmpty;
+
+    // Extract file information
+    final String? fileUrl =
+        json['file_url']?.toString() ?? json['fileUrl']?.toString();
+    final String? fileType =
+        json['file_type']?.toString() ?? json['fileType']?.toString();
+    final String? fileName =
+        json['file_name']?.toString() ?? json['fileName']?.toString();
+    final double? fileSize = json['file_size'] != null
+        ? double.tryParse(json['file_size'].toString())
+        : json['fileSize'] != null
+        ? double.tryParse(json['fileSize'].toString())
+        : null;
+
+    return ChatMessage(
+      id: int.parse(json['id'].toString()),
+      groupId: int.parse((json['group_id'] ?? json['groupId']).toString()),
+      userId: int.parse((json['user_id'] ?? json['userId']).toString()),
+      message: json['message']?.toString(),
+      createdAt:
+          json['created_at']?.toString() ??
+          json['createdAt']?.toString() ??
+          DateTime.now().toIso8601String(),
+      senderName: senderName,
+      senderAvatar: senderAvatar,
+      hasCall: hasCall,
+      hasFile: hasFile,
+      hasMessage: hasMessage,
+      fileUrl: fileUrl,
+      fileType: fileType,
+      fileName: fileName,
+      fileSize: fileSize,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    // Determine message type based on content
+    String messageType = 'text';
+    if (hasCall) {
+      messageType = 'call';
+    } else if (hasFile) {
+      messageType = 'file';
+    }
+
+    return {
+      'id': id,
+      'group_id': groupId,
+      'user_id': userId,
+      'message': message,
+      'created_at': createdAt,
+      'message_type': messageType,
+      'sender_name': senderName,
+      'sender_avatar': senderAvatar,
+      if (fileUrl != null) 'file_url': fileUrl,
+      if (fileType != null) 'file_type': fileType,
+      if (fileName != null) 'file_name': fileName,
+      if (fileSize != null) 'file_size': fileSize,
+    };
+  }
+
+  // Helper method to check if this is an image message
+  bool get isImage =>
+      hasFile &&
+      (fileType?.startsWith('image/') == true ||
+          fileName?.toLowerCase().contains(
+                RegExp(r'\.(jpg|jpeg|png|gif|bmp|webp)$'),
+              ) ==
+              true);
+
+  // Helper method to check if this is a video message
+  bool get isVideo =>
+      hasFile &&
+      (fileType?.startsWith('video/') == true ||
+          fileName?.toLowerCase().contains(
+                RegExp(r'\.(mp4|mov|avi|mkv|webm)$'),
+              ) ==
+              true);
+
+  // Helper method to check if this is an audio message
+  bool get isAudio =>
+      hasFile &&
+      (fileType?.startsWith('audio/') == true ||
+          fileName?.toLowerCase().contains(
+                RegExp(r'\.(mp3|wav|aac|ogg|flac)$'),
+              ) ==
+              true);
+
+  // Helper method to check if this is a document message
+  bool get isDocument => hasFile && !isImage && !isVideo && !isAudio;
+
+  // Helper method to get file extension
+  String? get fileExtension {
+    if (fileName == null) return null;
+    final parts = fileName!.split('.');
+    return parts.length > 1 ? parts.last.toLowerCase() : null;
+  }
+
+  // Helper method to format file size for display
+  String get formattedFileSize {
+    if (fileSize == null) return 'Unknown size';
+
+    const units = ['B', 'KB', 'MB', 'GB'];
+    double size = fileSize!;
+    int unitIndex = 0;
+
+    while (size >= 1024 && unitIndex < units.length - 1) {
+      size /= 1024;
+      unitIndex++;
+    }
+
+    return '${size.toStringAsFixed(1)} ${units[unitIndex]}';
+  }
+
+  // Helper method to get file icon based on type
+  IconData get fileIcon {
+    if (isImage) return Icons.image;
+    if (isVideo) return Icons.video_library;
+    if (isAudio) return Icons.audio_file;
+
+    final ext = fileExtension;
+    switch (ext) {
+      case 'pdf':
+        return Icons.picture_as_pdf;
+      case 'doc':
+      case 'docx':
+        return Icons.description;
+      case 'xls':
+      case 'xlsx':
+        return Icons.table_chart;
+      case 'ppt':
+      case 'pptx':
+        return Icons.slideshow;
+      default:
+        return Icons.insert_drive_file;
+    }
+  }
+
+  @override
+  String toString() {
+    return 'ChatMessage{id: $id, groupId: $groupId, userId: $userId, message: $message, hasFile: $hasFile, fileType: $fileType, fileName: $fileName}';
+  }
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ChatMessage &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          groupId == other.groupId &&
+          userId == other.userId;
+
+  @override
+  int get hashCode => id.hashCode ^ groupId.hashCode ^ userId.hashCode;
+}
+
+
+import 'api_service.dart';
+import '../models/user_model.dart';
+import '../models/api_response.dart';
+
+class UserService {
+  // Get all users (for participant selection)
+  static Future<ApiResponse<List<User>>> getUsers() async {
+    final response = await ApiService.get('users');
+    return ApiResponse<List<User>>.fromJson(
+      response,
+      (data) => (data as List).map((user) => User.fromJson(user)).toList(),
+    );
+  }
+
+  // Search users by name or email - Use the search group members endpoint
+  static Future<ApiResponse<List<User>>> searchUsers(String query) async {
+    // Since there's no general user search, get all users and filter client-side
+    final allUsersResponse = await getUsers();
+
+    if (allUsersResponse.isSuccess && allUsersResponse.data != null) {
+      // Filter users client-side
+      final filteredUsers = allUsersResponse.data!.where((user) {
+        final fullName = '${user.firstName} ${user.lastName}'.toLowerCase();
+        final email = user.email.toLowerCase();
+        final searchTerm = query.toLowerCase();
+
+        return fullName.contains(searchTerm) || email.contains(searchTerm);
+      }).toList();
+
+      return ApiResponse<List<User>>(
+        status: 'success',
+        message: '',
+        data: filteredUsers,
+      );
+    } else {
+      return ApiResponse<List<User>>(
+        status: 'error',
+        message: allUsersResponse.message,
+        data: [],
+      );
+    }
+  }
+
+  // Add participants to group
+}
+
+import 'package:edify_app/models/user_model.dart';
+import 'package:edify_app/services/user_service.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
+import '../services/group_service.dart';
+import '../models/group_model.dart';
+
+class GroupProvider with ChangeNotifier {
+  // Add these properties to your GroupProvider class
+  List<User> _availableUsers = [];
+  List<User> _selectedParticipants = [];
+  List<User> _currentParticipants = [];
+
+  List<User> get availableUsers => _availableUsers;
+  List<User> get selectedParticipants => _selectedParticipants;
+  List<User> get currentParticipants => _currentParticipants;
+
+  // Add participants to group
+  Future<bool> addParticipantsToGroup({
+    required int groupId,
+    required List<int> userIds,
+  }) async {
+    _isLoading = true;
+    _error = null;
+    notifyListeners();
+
+    try {
+      final response = await GroupService.addParticipants(
+        groupId: groupId,
+        userIds: userIds,
+      );
+
+      if (response.isSuccess) {
+        _selectedParticipants.clear();
+        _error = null;
+        _isLoading = false;
+        notifyListeners();
+        return true;
+      } else {
+        _error = response.message;
+        _isLoading = false;
+        notifyListeners();
+        return false;
+      }
+    } catch (e) {
+      _error = e.toString();
+      _isLoading = false;
+      notifyListeners();
+      return false;
+    }
+  }
+
+  // Load current participants
+  Future<void> loadGroupParticipants(int groupId) async {
+    _isLoading = true;
+    _error = null;
+
+    try {
+      final response = await GroupService.getGroupParticipants(groupId);
+
+      if (response.isSuccess) {
+        _currentParticipants = response.data ?? [];
+        _error = null;
+      } else {
+        _error = response.message;
+      }
+    } catch (e) {
+      _error = e.toString();
+    } finally {
+      _isLoading = false;
+      notifyListeners(); // Only here in finally block - GOOD
+    }
+  }
+
+  // Search available users for group
+  Future<void> searchAvailableUsers({
+    required int groupId,
+    required String query,
+  }) async {
+    _isLoading = true;
+    _error = null;
+    notifyListeners();
+
+    try {
+      print('🔍 Searching non-members for group $groupId with query: $query');
+      final response = await GroupService.searchAvailableUsers(
+        groupId: groupId,
+        query: query,
+      );
+
+      if (response.isSuccess) {
+        _availableUsers = response.data ?? [];
+        print('✅ Found ${_availableUsers.length} available users');
+        _error = null;
+      } else {
+        _error = response.message;
+        print('❌ Search failed: $_error');
+
+        // Fallback to general user search if specific endpoint fails
+        if (query.isNotEmpty) {
+          print('🔄 Falling back to general user search...');
+          await searchAllUsers(query);
+        }
+      }
+    } catch (e) {
+      _error = e.toString();
+      print('❌ Search error: $e');
+
+      // Fallback to general user search
+      if (query.isNotEmpty) {
+        print('🔄 Falling back to general user search after error...');
+        await searchAllUsers(query);
+      }
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> searchAllUsers(String query) async {
+    _isLoading = true;
+    _error = null;
+    notifyListeners();
+
+    try {
+      final response = await UserService.searchUsers(query);
+
+      if (response.isSuccess) {
+        _availableUsers = response.data ?? [];
+        _error = null;
+        print('✅ General search found ${_availableUsers.length} users');
+      } else {
+        _error = response.message;
+      }
+    } catch (e) {
+      _error = e.toString();
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+
+  // Manage selected participants
+  void addToSelectedParticipants(User user) {
+    if (!_selectedParticipants.any((u) => u.id == user.id)) {
+      _selectedParticipants.add(user);
+      notifyListeners();
+    }
+  }
+
+  void removeFromSelectedParticipants(User user) {
+    _selectedParticipants.removeWhere((u) => u.id == user.id);
+    notifyListeners();
+  }
+
+  void clearSelectedParticipants() {
+    _selectedParticipants.clear();
+    notifyListeners();
+  }
+
+  void clearAvailableUsers() {
+    _availableUsers.clear();
+    notifyListeners();
+  }
+
+  List<StudyGroup> _allGroups = [];
+  List<StudyGroup> _myGroups = [];
+  List<StudyGroup> _joinedGroups = [];
+  bool _isLoading = false;
+  String? _error;
+
+  List<StudyGroup> get allGroups => _allGroups;
+  List<StudyGroup> get myGroups => _myGroups;
+  List<StudyGroup> get joinedGroups => _joinedGroups;
+  bool get isLoading => _isLoading;
+  String? get error => _error;
+
+  // Load all groups
+  // In your GroupProvider methods
+  // In providers/group_provider.dart - FIXED VERSION
+  Future<void> loadAllGroups() async {
+    if (_isLoading) return; // Prevent multiple simultaneous calls
+
+    _isLoading = true;
+    _error = null;
+    // Don't call notifyListeners() here
+
+    try {
+      final response = await GroupService.getGroups();
+
+      if (response.isSuccess) {
+        _allGroups = response.data ?? [];
+        _error = null;
+      } else {
+        _error = response.message;
+      }
+    } catch (e) {
+      _error = e.toString();
+    } finally {
+      _isLoading = false;
+      // Safe to notify listeners after async operation completes
+      notifyListeners();
+    }
+  }
+
+  // Load my created groups
+  // Load my created groups - FIXED
+  Future<void> loadMyGroups() async {
+    if (_isLoading) return;
+
+    _isLoading = true;
+    _error = null;
+    // Remove notifyListeners() here
+
+    try {
+      final response = await GroupService.getMyGroups();
+
+      if (response.isSuccess) {
+        _myGroups = response.data ?? [];
+        _error = null;
+      } else {
+        _error = response.message;
+      }
+    } catch (e) {
+      _error = e.toString();
+    } finally {
+      _isLoading = false;
+      notifyListeners(); // Only call here
+    }
+  }
+
+  // Load joined groups - FIXED
+  Future<void> loadJoinedGroups() async {
+    if (_isLoading) return;
+
+    _isLoading = true;
+    _error = null;
+    // Remove notifyListeners() here
+
+    try {
+      final response = await GroupService.getJoinedGroups();
+
+      if (response.isSuccess) {
+        _joinedGroups = response.data ?? [];
+        _error = null;
+      } else {
+        _error = response.message;
+      }
+    } catch (e) {
+      _error = e.toString();
+    } finally {
+      _isLoading = false;
+      notifyListeners(); // Only call here
+    }
+  }
+
+  // Create a new group
+  Future<bool> createGroup({
+    required String groupName,
+    required int courseId,
+    required String description,
+    bool isRestricted = false,
+    List<dynamic> members = const [],
+  }) async {
+    _isLoading = true;
+    _error = null;
+    notifyListeners();
+
+    try {
+      final response = await GroupService.createGroup(
+        groupName: groupName,
+        courseId: courseId,
+        description: description,
+        isRestricted: isRestricted,
+        members: members,
+      );
+
+      if (response.isSuccess) {
+        // Add the new group to my groups list
+        if (response.data != null) {
+          _myGroups.add(response.data!);
+          _allGroups.add(response.data!);
+        }
+        _error = null;
+        _isLoading = false;
+        notifyListeners();
+        return true;
+      } else {
+        _error = response.message;
+        _isLoading = false;
+        notifyListeners();
+        return false;
+      }
+    } catch (e) {
+      _error = e.toString();
+      _isLoading = false;
+      notifyListeners();
+      return false;
+    }
+  }
+
+  // Add this method to handle group creation with participants
+  Future<bool> createGroupWithParticipants({
+    required String groupName,
+    required int courseId,
+    required String description,
+    bool isRestricted = false,
+    required List<int> participantIds,
+  }) async {
+    _isLoading = true;
+    _error = null;
+    notifyListeners();
+
+    try {
+      // Use the existing createGroup method but include participants
+      final response = await GroupService.createGroup(
+        groupName: groupName,
+        courseId: courseId,
+        description: description,
+        isRestricted: isRestricted,
+        members: participantIds, // Pass participant IDs as members
+      );
+
+      if (response.isSuccess) {
+        if (response.data != null) {
+          _myGroups.add(response.data!);
+          _allGroups.add(response.data!);
+        }
+        _error = null;
+        _isLoading = false;
+        notifyListeners();
+        return true;
+      } else {
+        _error = response.message;
+        _isLoading = false;
+        notifyListeners();
+        return false;
+      }
+    } catch (e) {
+      _error = e.toString();
+      _isLoading = false;
+      notifyListeners();
+      return false;
+    }
+  }
+
+  // Join a group
+  // In GroupProvider
+  Future<bool> joinGroup(int groupId) async {
+    _isLoading = true;
+    _error = null;
+    notifyListeners();
+
+    try {
+      print('🚀 Attempting to join group $groupId');
+      final response = await GroupService.joinGroup(groupId);
+
+      print('📡 Join group response - Success: ${response.isSuccess}');
+      print('📡 Join group response - Message: ${response.message}');
+      print('📡 Join group response - Data: ${response.data}');
+
+      if (response.isSuccess) {
+        // Find the group and update it
+        final groupIndex = _allGroups.indexWhere(
+          (group) => group.id == groupId,
+        );
+        if (groupIndex != -1) {
+          _joinedGroups.add(_allGroups[groupIndex]);
+        }
+        _error = null;
+        _isLoading = false;
+        notifyListeners();
+        return true;
+      } else {
+        _error = response.message;
+        _isLoading = false;
+        notifyListeners();
+        return false;
+      }
+    } catch (e) {
+      print('❌ Error joining group: $e');
+      _error = e.toString();
+      _isLoading = false;
+      notifyListeners();
+      return false;
+    }
+  }
+
+  // Leave a group
+  Future<bool> leaveGroup(int groupId) async {
+    _isLoading = true;
+    _error = null;
+    notifyListeners();
+
+    try {
+      final response = await GroupService.leaveGroup(groupId);
+
+      if (response.isSuccess) {
+        // Remove from joined groups
+        _joinedGroups.removeWhere((group) => group.id == groupId);
+        _error = null;
+        _isLoading = false;
+        notifyListeners();
+        return true;
+      } else {
+        _error = response.message;
+        _isLoading = false;
+        notifyListeners();
+        return false;
+      }
+    } catch (e) {
+      _error = e.toString();
+      _isLoading = false;
+      notifyListeners();
+      return false;
+    }
+  }
+
+  // Search groups
+  Future<List<StudyGroup>> searchGroups(String query) async {
+    try {
+      final response = await GroupService.searchGroups(query);
+
+      if (response.isSuccess) {
+        return response.data ?? [];
+      } else {
+        _error = response.message;
+        return [];
+      }
+    } catch (e) {
+      _error = e.toString();
+      return [];
+    }
+  }
+
+  // Clear error
+  void clearError() {
+    _error = null;
+    notifyListeners();
+  }
+
+  Future<void> debugSearchUsers(String query) async {
+    print('🐛 DEBUG: Starting search with query: "$query"');
+
+    _isLoading = true;
+    _error = null;
+    notifyListeners();
+
+    try {
+      print('🐛 DEBUG: Calling UserService.searchUsers...');
+      final response = await UserService.searchUsers(query);
+
+      print(
+        '🐛 DEBUG: Search response - Success: ${response.isSuccess}, Message: ${response.message}',
+      );
+
+      if (response.isSuccess) {
+        _availableUsers = response.data ?? [];
+        print(
+          '🐛 DEBUG: Available users set to: ${_availableUsers.length} users',
+        );
+        _error = null;
+      } else {
+        _error = response.message;
+        print('🐛 DEBUG: Search failed with error: $_error');
+      }
+    } catch (e) {
+      _error = e.toString();
+      print('🐛 DEBUG: Search threw exception: $e');
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+      print('🐛 DEBUG: Search completed. Loading: $_isLoading, Error: $_error');
+    }
+  }
+}
+
+
+import 'dart:convert';
+
+class User {
+  final int id;
+  final String firstName;
+  final String lastName;
+  final String email;
+  final String? avatar;
+  final String? emailVerifiedAt;
+  final String createdAt;
+  final String updatedAt;
+  final String avatarUrl;
+
+  User({
+    required this.id,
+    required this.firstName,
+    required this.lastName,
+    required this.email,
+    this.avatar,
+    this.emailVerifiedAt,
+    required this.createdAt,
+    required this.updatedAt,
+    required this.avatarUrl,
+  });
+
+  factory User.fromJson(Map<String, dynamic> json) {
+    return User(
+      id: json['id'],
+      firstName: json['first_name'],
+      lastName: json['last_name'],
+      email: json['email'],
+      avatar: json['avatar'],
+      emailVerifiedAt: json['email_verified_at'],
+      createdAt: json['created_at'],
+      updatedAt: json['updated_at'],
+      avatarUrl: json['avatar_url'],
+    );
+  }
+
+  String get fullName => '$firstName $lastName';
+
+  Map<String, dynamic> toJson() {
+    return {
+      'id': id,
+      'first_name': firstName,
+      'last_name': lastName,
+      'email': email,
+      'avatar': avatar,
+      'email_verified_at': emailVerifiedAt,
+      'created_at': createdAt,
+      'updated_at': updatedAt,
+      'avatar_url': avatarUrl,
+    };
+  }
+}
+
+// Add this missing class
+class LoginResponseData {
+  final String message;
+  final User user;
+  final String token;
+
+  LoginResponseData({
+    required this.message,
+    required this.user,
+    required this.token,
+  });
+
+  factory LoginResponseData.fromJson(Map<String, dynamic> json) {
+    return LoginResponseData(
+      message: json['message'],
+      user: User.fromJson(json['user']),
+      token: json['token'],
+    );
+  }
+}
+
+import 'package:shared_preferences/shared_preferences.dart';
+
+import 'api_service.dart';
+import '../models/group_model.dart';
+import '../models/api_response.dart';
+import 'package:edify_app/models/user_model.dart';
+
+class GroupService {
+  // Get all study groups
+  static Future<ApiResponse<List<StudyGroup>>> getGroups() async {
+    final response = await ApiService.get('study-rooms');
+    return ApiResponse<List<StudyGroup>>.fromJson(
+      response,
+      (data) =>
+          (data as List).map((group) => StudyGroup.fromJson(group)).toList(),
+    );
+  }
+
+  // Get groups created by current user
+  static Future<ApiResponse<List<StudyGroup>>> getMyGroups() async {
+    final response = await ApiService.get('study-groups/getUserGroups');
+    return ApiResponse<List<StudyGroup>>.fromJson(
+      response,
+      (data) =>
+          (data as List).map((group) => StudyGroup.fromJson(group)).toList(),
+    );
+  }
+
+  // Get groups user has joined
+  static Future<ApiResponse<List<StudyGroup>>> getJoinedGroups() async {
+    final response = await ApiService.get('study-groups/getUserGroups');
+    return ApiResponse<List<StudyGroup>>.fromJson(
+      response,
+      (data) =>
+          (data as List).map((group) => StudyGroup.fromJson(group)).toList(),
+    );
+  }
+
+  // Create new study group
+  static Future<ApiResponse<StudyGroup>> createGroup({
+    required String groupName,
+    required int courseId,
+    required String description,
+    bool isRestricted = false,
+    required List<dynamic> members,
+  }) async {
+    final response = await ApiService.post('study-groups/create', {
+      'group_name': groupName,
+      'course_id': courseId,
+      'description': description,
+      'is_restricted': isRestricted,
+      'members': members,
+    });
+
+    return ApiResponse<StudyGroup>.fromJson(
+      response,
+      (data) => StudyGroup.fromJson(data),
+    );
+  }
+
+  // Join a study group (Request to join)
+  // In GroupService
+  static Future<ApiResponse<dynamic>> joinGroup(int groupId) async {
+    try {
+      print('🌐 Sending join request to group $groupId');
+
+      // Based on your endpoints: "Request to join a group"
+      final response = await ApiService.post(
+        'study-groups/$groupId/join-request',
+        {
+          // Add any required parameters here
+          'user_id':
+              await _getCurrentUserId(), // You might need to get current user ID
+          'request_message': 'Request to join group',
+        },
+      );
+
+      print('✅ Join request API response: $response');
+
+      return ApiResponse<dynamic>.fromJson(response, null);
+    } catch (e) {
+      print('❌ Join request API error: $e');
+      rethrow;
+    }
+  }
+
+  // Helper method to get current user ID
+  static Future<int> _getCurrentUserId() async {
+    // You'll need to implement this based on how you store user data
+    // This might come from your UserProvider or SharedPreferences
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getInt('user_id') ?? 0;
+  }
+
+  // Leave a study group
+  static Future<ApiResponse<dynamic>> leaveGroup(int groupId) async {
+    final response = await ApiService.post('study-groups/$groupId/leave', {});
+    return ApiResponse<dynamic>.fromJson(response, null);
+  }
+
+  // Get group details
+  static Future<ApiResponse<StudyGroup>> getGroupDetails(int groupId) async {
+    final response = await ApiService.get('study-groups/$groupId/details');
+    return ApiResponse<StudyGroup>.fromJson(
+      response,
+      (data) => StudyGroup.fromJson(data),
+    );
+  }
+
+  // Add participants to group
+  static Future<ApiResponse<dynamic>> addParticipants({
+    required int groupId,
+    required List<int> userIds,
+  }) async {
+    final response = await ApiService.post('study-groups/$groupId/add-member', {
+      'user_ids': userIds,
+    });
+    return ApiResponse<dynamic>.fromJson(response, null);
+  }
+
+  // Get group participants
+  static Future<ApiResponse<List<User>>> getGroupParticipants(
+    int groupId,
+  ) async {
+    final response = await ApiService.get('study-groups/$groupId/participants');
+    return ApiResponse<List<User>>.fromJson(
+      response,
+      (data) => (data as List).map((user) => User.fromJson(user)).toList(),
+    );
+  }
+
+  // Search available users for group
+  static Future<ApiResponse<List<User>>> searchAvailableUsers({
+    required int groupId,
+    required String query,
+  }) async {
+    print('🔍 Searching available users for group $groupId with query: $query');
+
+    // Try different possible endpoints for searching available users
+    try {
+      // First try: Search group members (if this endpoint searches all users)
+      final response = await ApiService.get(
+        'study-groups/$groupId/participants?search=$query',
+      );
+      print('📡 Search response: ${response.toString()}');
+
+      return ApiResponse<List<User>>.fromJson(
+        response,
+        (data) => (data as List).map((user) => User.fromJson(user)).toList(),
+      );
+    } catch (e) {
+      print('❌ First search attempt failed: $e');
+
+      // Fallback: Use general user search (client-side filtering)
+      return await _fallbackUserSearch(query);
+    }
+  }
+
+  // Fallback: Client-side user search
+  static Future<ApiResponse<List<User>>> _fallbackUserSearch(
+    String query,
+  ) async {
+    try {
+      print('🔄 Using fallback client-side search for: $query');
+
+      // Get all users first
+      final allUsersResponse = await ApiService.get('users');
+      final allUsers = ApiResponse<List<User>>.fromJson(
+        allUsersResponse,
+        (data) => (data as List).map((user) => User.fromJson(user)).toList(),
+      );
+
+      if (allUsers.isSuccess && allUsers.data != null) {
+        // Filter users client-side
+        final filteredUsers = allUsers.data!.where((user) {
+          final fullName = '${user.firstName} ${user.lastName}'.toLowerCase();
+          final email = user.email.toLowerCase();
+          final searchTerm = query.toLowerCase();
+
+          return fullName.contains(searchTerm) || email.contains(searchTerm);
+        }).toList();
+
+        print('✅ Fallback search found ${filteredUsers.length} users');
+
+        return ApiResponse<List<User>>(
+          status: 'success',
+          message: '',
+          data: filteredUsers,
+        );
+      } else {
+        return ApiResponse<List<User>>(
+          status: 'error',
+          message: 'Failed to load users',
+          data: [],
+        );
+      }
+    } catch (e) {
+      print('❌ Fallback search failed: $e');
+      return ApiResponse<List<User>>(
+        status: 'error',
+        message: e.toString(),
+        data: [],
+      );
+    }
+  }
+
+  // Search groups
+  static Future<ApiResponse<List<StudyGroup>>> searchGroups(
+    String query,
+  ) async {
+    final response = await ApiService.get('groups/search?q=$query');
+    return ApiResponse<List<StudyGroup>>.fromJson(
+      response,
+      (data) =>
+          (data as List).map((group) => StudyGroup.fromJson(group)).toList(),
+    );
+  }
+
+  // Remove participant from group
+  static Future<ApiResponse<dynamic>> removeParticipant({
+    required int groupId,
+    required int userId,
+  }) async {
+    final response = await ApiService.delete(
+      'study-groups/$groupId/participants/$userId',
+    );
+    return ApiResponse<dynamic>.fromJson(response, null);
+  }
+
+  // Update group information
+  static Future<ApiResponse<StudyGroup>> updateGroup({
+    required int groupId,
+    required String groupName,
+    required String description,
+  }) async {
+    final response = await ApiService.put('study-groups/$groupId/update', {
+      'group_name': groupName,
+      'description': description,
+    });
+
+    return ApiResponse<StudyGroup>.fromJson(
+      response,
+      (data) => StudyGroup.fromJson(data),
+    );
+  }
+
+  // Delete group (if user is creator)
+  static Future<ApiResponse<dynamic>> deleteGroup(int groupId) async {
+    final response = await ApiService.delete('study-groups/$groupId');
+    return ApiResponse<dynamic>.fromJson(response, null);
+  }
+}
+
+class ApiResponse<T> {
+  final String status;
+  final String message;
+  final T? data;
+
+  ApiResponse({required this.status, required this.message, this.data});
+
+  factory ApiResponse.fromJson(dynamic json, T Function(dynamic)? fromJson) {
+    print('🔧 ApiResponse.fromJson called with type: ${json.runtimeType}');
+
+    // Handle case where API returns a raw list directly (like your users endpoint)
+    if (json is List) {
+      print('📦 API returned raw list with ${json.length} items');
+      if (fromJson != null) {
+        try {
+          final convertedData = fromJson(json);
+          return ApiResponse<T>(
+            status: 'success',
+            message: '',
+            data: convertedData,
+          );
+        } catch (e) {
+          print('❌ Error converting raw list: $e');
+          return ApiResponse<T>(
+            status: 'error',
+            message: 'Failed to convert data: $e',
+            data: null,
+          );
+        }
+      } else {
+        return ApiResponse<T>(
+          status: 'success',
+          message: '',
+          data: json as T?, // Direct assignment
+        );
+      }
+    }
+
+    // Handle case where API returns a Map (proper API response)
+    if (json is Map<String, dynamic>) {
+      final status = json['status']?.toString() ?? 'success';
+      final message = json['message']?.toString() ?? '';
+      final data = json['data'];
+
+      T? convertedData;
+      if (fromJson != null && data != null) {
+        try {
+          convertedData = fromJson(data);
+        } catch (e) {
+          print('❌ Error converting data: $e');
+        }
+      } else {
+        convertedData = data as T?;
+      }
+
+      return ApiResponse<T>(
+        status: status,
+        message: message,
+        data: convertedData,
+      );
+    }
+
+    // Handle unexpected response type
+    print('⚠️ Unexpected API response type: ${json.runtimeType}');
+    return ApiResponse<T>(
+      status: 'error',
+      message: 'Unexpected response format: ${json.runtimeType}',
+      data: null,
+    );
+  }
+
+  bool get isSuccess => status == 'success';
+}
+
+
+import 'dart:convert';
+import 'dart:io';
+import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
+
+class ApiService {
+  static const String baseUrl = 'https://ediifyapi.tife.com.ng/api';
+  static const String corsProxy = 'https://corsproxy.io/?';
+  static String? _authToken;
+
+  static String get _effectiveBaseUrl {
+    if (kIsWeb) {
+      return '$corsProxy${Uri.encodeComponent(baseUrl)}';
+    }
+    return baseUrl;
+  }
+
+  static Future<void> initialize() async {
+    final prefs = await SharedPreferences.getInstance();
+    _authToken = prefs.getString('auth_token');
+  }
+
+  static Future<Map<String, String>> getHeaders() async {
+    return await _headers;
+  }
+
+  // Keep the existing private _headers method
+  static Future<Map<String, String>> get _headers async {
+    // Refresh token from storage in case it was updated
+    if (_authToken == null) {
+      await initialize();
+    }
+
+    final headers = {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      'X-Requested-With': 'XMLHttpRequest',
+    };
+
+    if (_authToken != null) {
+      headers['Authorization'] = 'Bearer $_authToken';
+      print('🔐 Adding Bearer token to request');
+    } else {
+      print('⚠️ No auth token available for API request');
+    }
+
+    return headers;
+  }
+
+  static Future<dynamic> post(String endpoint, dynamic data) async {
+    try {
+      final url = '$_effectiveBaseUrl/$endpoint';
+      print('🌐 API Call: POST $url');
+
+      final response = await http
+          .post(
+            Uri.parse(url),
+            headers: await _headers,
+            body: json.encode(data),
+          )
+          .timeout(const Duration(seconds: 30));
+
+      print('✅ API Response: ${response.statusCode}');
+      return _handleResponse(response);
+    } on SocketException {
+      throw Exception('No internet connection');
+    } catch (e) {
+      throw Exception('Network error: $e');
+    }
+  }
+
+  static Future<dynamic> get(String endpoint) async {
+    try {
+      final url = '$_effectiveBaseUrl/$endpoint';
+      print('🌐 API Call: GET $url');
+
+      final response = await http
+          .get(Uri.parse(url), headers: await _headers)
+          .timeout(const Duration(seconds: 30));
+
+      print('✅ API Response: ${response.statusCode}');
+      return _handleResponse(response);
+    } on SocketException {
+      throw Exception('No internet connection');
+    } catch (e) {
+      throw Exception('Network error: $e');
+    }
+  }
+
+  static dynamic _handleResponse(http.Response response) {
+    final responseBody = json.decode(response.body);
+
+    switch (response.statusCode) {
+      case 200:
+      case 201:
+        return responseBody;
+      case 400:
+        throw Exception(responseBody['message'] ?? 'Bad request');
+      case 401:
+        removeToken();
+        throw Exception(responseBody['message'] ?? 'Invalid credentials');
+      case 500:
+        throw Exception(responseBody['message'] ?? 'Server error');
+      default:
+        throw Exception('Error ${response.statusCode}');
+    }
+  }
+
+  static Future<void> saveToken(String token) async {
+    _authToken = token;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('auth_token', token);
+  }
+
+  static Future<void> removeToken() async {
+    _authToken = null;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('auth_token');
+    await prefs.remove('user_data');
+  }
+
+  static Future<dynamic> put(String endpoint, dynamic data) async {
+    try {
+      final url = '$_effectiveBaseUrl/$endpoint';
+      print('🌐 API Call: PUT $url');
+
+      final response = await http
+          .put(Uri.parse(url), headers: await _headers, body: json.encode(data))
+          .timeout(const Duration(seconds: 30));
+
+      print('✅ API Response: ${response.statusCode}');
+      return _handleResponse(response);
+    } on SocketException {
+      throw Exception('No internet connection');
+    } catch (e) {
+      throw Exception('Network error: $e');
+    }
+  }
+
+  static Future<dynamic> delete(String endpoint) async {
+    try {
+      final url = '$_effectiveBaseUrl/$endpoint';
+      print('🌐 API Call: DELETE $url');
+
+      final response = await http
+          .delete(Uri.parse(url), headers: await _headers)
+          .timeout(const Duration(seconds: 30));
+
+      print('✅ API Response: ${response.statusCode}');
+      return _handleResponse(response);
+    } on SocketException {
+      throw Exception('No internet connection');
+    } catch (e) {
+      throw Exception('Network error: $e');
+    }
+  }
+}
+
+
+import 'dart:async';
+import 'dart:io';
+import 'package:edify_app/services/chat_service.dart';
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import 'package:edify_app/widgets/appbar.dart';
+import 'package:edify_app/widgets/texts.dart';
+import 'package:edify_app/constants/colors.dart';
+import 'package:edify_app/providers/chat_provider.dart';
+import 'package:edify_app/providers/user_provider.dart';
+import 'package:edify_app/models/chat_message.dart';
+
+class GroupChatPage extends StatefulWidget {
+  final dynamic group;
+
+  const GroupChatPage({super.key, required this.group});
+
+  @override
+  State<GroupChatPage> createState() => _GroupChatPageState();
+}
+
+class _GroupChatPageState extends State<GroupChatPage> {
+  final TextEditingController _messageController = TextEditingController();
+  final ScrollController _scrollController = ScrollController();
+  bool _hasText = false;
+  late Future<void> _messagesFuture;
+  Timer? _pollingTimer;
+  int _lastMessageCount = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _messageController.addListener(_onTextChanged);
+    _messagesFuture = _loadMessagesOnInit();
+    _startPolling();
+  }
+
+  @override
+  void dispose() {
+    _messageController.dispose();
+    _scrollController.dispose();
+    _pollingTimer?.cancel();
+    super.dispose();
+  }
+
+  void _startPolling() {
+    // Poll every 3 seconds for real-time updates
+    _pollingTimer = Timer.periodic(Duration(seconds: 3), (timer) {
+      if (mounted) {
+        _checkForNewMessages();
+      }
+    });
+  }
+
+  void _checkForNewMessages() async {
+    final chatProvider = Provider.of<ChatProvider>(context, listen: false);
+
+    if (!chatProvider.isLoading && !chatProvider.isSending) {
+      final previousCount = _lastMessageCount;
+      await chatProvider.loadGroupMessages(widget.group.id);
+
+      final currentCount = chatProvider.messages.length;
+      if (currentCount > previousCount) {
+        print('🆕 New messages detected: $previousCount → $currentCount');
+        _lastMessageCount = currentCount;
+        _scrollToBottom();
+      }
+    }
+  }
+
+  Future<void> _loadMessagesOnInit() async {
+    final chatProvider = Provider.of<ChatProvider>(context, listen: false);
+    await chatProvider.loadGroupMessages(widget.group.id);
+    _lastMessageCount = chatProvider.messages.length;
+  }
+
+  void _onTextChanged() {
+    setState(() {
+      _hasText = _messageController.text.trim().isNotEmpty;
+    });
+  }
+
+  void _sendMessage() async {
+    final message = _messageController.text.trim();
+    if (message.isEmpty) return;
+
+    final chatProvider = Provider.of<ChatProvider>(context, listen: false);
+    final userProvider = Provider.of<UserProvider>(context, listen: false);
+
+    // Store for retry
+    final messageToSend = message;
+    final userId = userProvider.user?.id ?? 0;
+
+    // Clear input immediately
+    _messageController.clear();
+    setState(() {
+      _hasText = false;
+    });
+
+    // Add message locally immediately (optimistic update)
+    final tempMessage = ChatMessage(
+      id: DateTime.now().millisecondsSinceEpoch,
+      groupId: widget.group.id,
+      userId: userId,
+      message: messageToSend,
+      createdAt: DateTime.now().toIso8601String(),
+      senderName: 'You',
+    );
+
+    chatProvider.addMessage(tempMessage);
+
+    // ✅ FIX: Scroll to bottom after adding new message
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _scrollToBottom();
+    });
+
+    // Then try to send to server
+    final success = await chatProvider.sendMessage(
+      groupId: widget.group.id,
+      message: messageToSend,
+      userId: userId,
+    );
+
+    if (!success && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Failed to send message'),
+          backgroundColor: Colors.red,
+          action: SnackBarAction(
+            label: 'Retry',
+            textColor: Colors.white,
+            onPressed: () {
+              _retrySendMessage(messageToSend, userId);
+            },
+          ),
+        ),
+      );
+    }
+  }
+
+  void _retrySendMessage(String message, int userId) async {
+    final chatProvider = Provider.of<ChatProvider>(context, listen: false);
+
+    final success = await chatProvider.sendMessage(
+      groupId: widget.group.id,
+      message: message,
+      userId: userId,
+    );
+
+    if (!success && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Still failed to send message'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
+  void _scrollToBottom() {
+    if (_scrollController.hasClients) {
+      _scrollController.animateTo(
+        _scrollController.position.maxScrollExtent,
+        duration: Duration(milliseconds: 300),
+        curve: Curves.easeOut,
+      );
+    }
+  }
+
+  void _showMediaOptions(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) {
+        return Container(
+          padding: EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                'Choose Media',
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                  color: AppColors.primaryBlack,
+                ),
+              ),
+              SizedBox(height: 20),
+
+              // Photo Option
+              ListTile(
+                leading: Icon(
+                  Icons.photo_library_outlined,
+                  color: AppColors.primaryOrange,
+                ),
+                title: Text('Photo Library'),
+                onTap: () {
+                  Navigator.pop(context);
+                  _pickImageFromGallery();
+                },
+              ),
+
+              // Camera Option
+              ListTile(
+                leading: Icon(
+                  Icons.photo_camera_outlined,
+                  color: AppColors.primaryOrange,
+                ),
+                title: Text('Take Photo'),
+                onTap: () {
+                  Navigator.pop(context);
+                  _takePhotoWithCamera();
+                },
+              ),
+
+              // Video Option
+              ListTile(
+                leading: Icon(
+                  Icons.video_library_outlined,
+                  color: AppColors.primaryOrange,
+                ),
+                title: Text('Video Library'),
+                onTap: () {
+                  Navigator.pop(context);
+                  _pickVideoFromGallery();
+                },
+              ),
+
+              SizedBox(height: 10),
+              Divider(),
+              SizedBox(height: 10),
+
+              // Cancel Button
+              SizedBox(
+                width: double.infinity,
+                child: TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: Text(
+                    'Cancel',
+                    style: TextStyle(color: AppColors.primaryOrange),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  void _showAttachmentOptions(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) {
+        return Container(
+          padding: EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                'Send File',
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                  color: AppColors.primaryBlack,
+                ),
+              ),
+              SizedBox(height: 20),
+
+              // Document Option
+              ListTile(
+                leading: Icon(
+                  Icons.insert_drive_file_outlined,
+                  color: AppColors.primaryOrange,
+                ),
+                title: Text('Document'),
+                subtitle: Text('PDF, Word, Excel, etc.'),
+                onTap: () {
+                  Navigator.pop(context);
+                  _pickDocumentFile();
+                },
+              ),
+
+              // Audio Option
+              ListTile(
+                leading: Icon(
+                  Icons.audio_file_outlined,
+                  color: AppColors.primaryOrange,
+                ),
+                title: Text('Audio File'),
+                subtitle: Text('MP3, WAV, etc.'),
+                onTap: () {
+                  Navigator.pop(context);
+                  _pickAudioFile();
+                },
+              ),
+
+              // Location Option
+              ListTile(
+                leading: Icon(
+                  Icons.location_on_outlined,
+                  color: AppColors.primaryOrange,
+                ),
+                title: Text('Location'),
+                subtitle: Text('Share your location'),
+                onTap: () {
+                  Navigator.pop(context);
+                  _shareLocation();
+                },
+              ),
+
+              SizedBox(height: 10),
+              Divider(),
+              SizedBox(height: 10),
+
+              // Cancel Button
+              SizedBox(
+                width: double.infinity,
+                child: TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: Text(
+                    'Cancel',
+                    style: TextStyle(color: AppColors.primaryOrange),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  void _startVoiceMessage() {
+    // Show voice recording UI
+    showModalBottomSheet(
+      context: context,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) {
+        return Container(
+          padding: EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                'Voice Message',
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                  color: AppColors.primaryBlack,
+                ),
+              ),
+              SizedBox(height: 20),
+
+              // Recording UI
+              Container(
+                width: 80,
+                height: 80,
+                decoration: BoxDecoration(
+                  color: AppColors.primaryOrange.withOpacity(0.1),
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(
+                  Icons.mic,
+                  size: 40,
+                  color: AppColors.primaryOrange,
+                ),
+              ),
+              SizedBox(height: 16),
+
+              Text(
+                'Press and hold to record',
+                style: TextStyle(color: AppColors.primaryBlackLight),
+              ),
+              SizedBox(height: 20),
+
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: [
+                  // Cancel Button
+                  Expanded(
+                    child: TextButton(
+                      onPressed: () => Navigator.pop(context),
+                      child: Text(
+                        'Cancel',
+                        style: TextStyle(color: AppColors.primaryBlack),
+                      ),
+                    ),
+                  ),
+
+                  // Record Button
+                  Expanded(
+                    child: ElevatedButton(
+                      onPressed: () {
+                        // Start recording logic
+                        _recordVoiceMessage();
+                      },
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.primaryOrange,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                      ),
+                      child: Text(
+                        'Hold to Record',
+                        style: TextStyle(color: Colors.white),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  // Placeholder methods - implement with file_picker or image_picker plugins
+  // In GroupChatPage - update file picking methods
+void _pickImageFromGallery() async {
+  print('📸 Picking image from gallery...');
+  // TODO: Uncomment when you add image_picker
+  // final image = await ImagePicker().pickImage(source: ImageSource.gallery);
+  // if (image != null) {
+  //   _sendFileMessage(File(image.path), 'image');
+  // }
+  
+  // Temporary: Show success message for testing
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(
+      content: Text('Image picker ready - implement with image_picker plugin'),
+      backgroundColor: Colors.orange,
+    ),
+  );
+}
+
+void _takePhotoWithCamera() async {
+  print('📷 Taking photo with camera...');
+  // TODO: Uncomment when you add image_picker
+  // final image = await ImagePicker().pickImage(source: ImageSource.camera);
+  // if (image != null) {
+  //   _sendFileMessage(File(image.path), 'image');
+  // }
+  
+  // Temporary: Show success message for testing
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(
+      content: Text('Camera ready - implement with image_picker plugin'),
+      backgroundColor: Colors.orange,
+    ),
+  );
+}
+
+void _pickDocumentFile() async {
+  print('📄 Picking document file...');
+  // TODO: Implement with file_picker plugin
+  // final result = await FilePicker.platform.pickFiles(
+  //   type: FileType.custom,
+  //   allowedExtensions: ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx'],
+  // );
+  // if (result != null && result.files.single.path != null) {
+  //   _sendFileMessage(File(result.files.single.path!), 'document');
+  // }
+  
+  // Temporary: Show success message for testing
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(
+      content: Text('Document picker ready - implement with file_picker plugin'),
+      backgroundColor: Colors.orange,
+    ),
+  );
+}
+
+void _pickAudioFile() async {
+  print('🎵 Picking audio file...');
+  // TODO: Implement with file_picker plugin
+  // final result = await FilePicker.platform.pickFiles(
+  //   type: FileType.audio,
+  // );
+  // if (result != null && result.files.single.path != null) {
+  //   _sendFileMessage(File(result.files.single.path!), 'audio');
+  // }
+  
+  // Temporary: Show success message for testing
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(
+      content: Text('Audio picker ready - implement with file_picker plugin'),
+      backgroundColor: Colors.orange,
+    ),
+  );
+}
+
+void _pickVideoFromGallery() async {
+  print('🎥 Picking video from gallery...');
+  // TODO: Implement with image_picker plugin
+  // final video = await ImagePicker().pickVideo(source: ImageSource.gallery);
+  // if (video != null) {
+  //   _sendFileMessage(File(video.path), 'video');
+  // }
+  
+  // Temporary: Show success message for testing
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(
+      content: Text('Video picker ready - implement with image_picker plugin'),
+      backgroundColor: Colors.orange,
+    ),
+  );
+}
+
+void _shareLocation() async {
+  print('📍 Sharing location...');
+  // TODO: Implement location sharing
+  // This would be different from file upload
+  // You might send coordinates instead of a file
+  
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(
+      content: Text('Location sharing - implement with location services'),
+      backgroundColor: Colors.orange,
+    ),
+  );
+}
+
+  // Method to send different types of messages
+  // In GroupChatPage - corrected file upload method
+void _sendFileMessage(File file, String messageType) async {
+  final chatProvider = Provider.of<ChatProvider>(context, listen: false);
+  final userProvider = Provider.of<UserProvider>(context, listen: false);
+
+  // Show uploading indicator
+  final tempMessage = ChatMessage(
+    id: DateTime.now().millisecondsSinceEpoch,
+    groupId: widget.group.id,
+    userId: userProvider.user?.id ?? 0,
+    message: 'Uploading file...',
+    createdAt: DateTime.now().toIso8601String(),
+    senderName: 'You',
+    hasFile: true,
+    hasMessage: false,
+    fileName: file.path.split('/').last,
+  );
+
+  chatProvider.addMessage(tempMessage);
+  _scrollToBottom();
+
+  try {
+    // Upload file using base64 approach (no header issues)
+    final uploadResponse = await ChatService.uploadFile(file);
+    
+    if (uploadResponse.isSuccess && uploadResponse.data != null) {
+      // File uploaded successfully, send message with file URL
+      final fileUrl = uploadResponse.data!;
+      final fileSize = await file.length() / (1024 * 1024); // Size in MB
+      final fileName = file.path.split('/').last;
+      final fileType = ChatService._getMimeType(fileName);
+      
+      // ✅ FIX: Use the correct parameters
+      final success = await chatProvider.sendMessage(
+        groupId: widget.group.id,
+        message: 'Sent a file', // Customize based on file type
+        userId: userProvider.user?.id ?? 0,
+        messageType: 'file', // This tells the API it's a file message
+        fileUrl: fileUrl,     // The uploaded file URL
+        fileType: fileType,   // MIME type like 'image/jpeg'
+        fileName: fileName,   // Original file name
+        fileSize: fileSize,   // File size in MB
+      );
+
+      if (!success && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to send file'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } else {
+      // Upload failed
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to upload file: ${uploadResponse.message}'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  } catch (e) {
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('File upload error: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+}
+
+ // In GroupChatPage - add file message support to message bubbles
+Widget _buildMessageBubble({
+  required ChatMessage chatMessage,
+  required bool isMe,
+}) {
+  // Handle file messages
+  if (chatMessage.hasFile) {
+    return _buildFileBubble(chatMessage, isMe);
+  }
+  
+  // Handle call messages
+  if (chatMessage.hasCall) {
+    return _buildCallBubble(chatMessage, isMe);
+  }
+  
+  // Handle text messages (existing code)
+  return Row(
+    mainAxisAlignment: isMe ? MainAxisAlignment.end : MainAxisAlignment.start,
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      if (!isMe && chatMessage.senderAvatar.isNotEmpty)
+        CircleAvatar(
+          radius: 15,
+          backgroundImage: NetworkImage(chatMessage.senderAvatar),
+        )
+      else if (!isMe)
+        CircleAvatar(
+          radius: 15,
+          backgroundColor: AppColors.primaryOrange.withOpacity(0.1),
+          child: Text(
+            chatMessage.senderName.isNotEmpty 
+                ? chatMessage.senderName[0].toUpperCase()
+                : '?',
+            style: TextStyle(
+              color: AppColors.primaryOrange,
+              fontWeight: FontWeight.bold,
+              fontSize: 12,
+            ),
+          ),
+        ),
+      if (!isMe) SizedBox(width: 8),
+
+      Flexible(
+        child: Container(
+          padding: EdgeInsets.all(12),
+          margin: EdgeInsets.symmetric(vertical: 4),
+          decoration: BoxDecoration(
+            color: isMe
+                ? AppColors.primaryOrangeLight
+                : AppColors.primaryGreyLight,
+            borderRadius: BorderRadius.only(
+              topLeft: Radius.circular(16),
+              topRight: Radius.circular(16),
+              bottomLeft: isMe ? Radius.circular(16) : Radius.circular(4),
+              bottomRight: isMe ? Radius.circular(4) : Radius.circular(16),
+            ),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (!isMe && chatMessage.senderName != 'You')
+                Text(
+                  chatMessage.senderName,
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold, 
+                    fontSize: 10,
+                    color: AppColors.primaryBlack,
+                  ),
+                ),
+              SizedBox(height: 4),
+              Text(
+                chatMessage.message ?? '',
+                style: TextStyle(fontSize: 12, color: AppColors.primaryBlack),
+              ),
+              SizedBox(height: 4),
+              Text(
+                _formatTime(chatMessage.createdAt),
+                style: TextStyle(
+                  fontSize: 8,
+                  color: AppColors.primaryBlack.withOpacity(0.5),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+
+      if (isMe) SizedBox(width: 8),
+    ],
+  );
+}
+
+// Add file bubble method
+Widget _buildFileBubble(ChatMessage chatMessage, bool isMe) {
+  return Row(
+    mainAxisAlignment: isMe ? MainAxisAlignment.end : MainAxisAlignment.start,
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      if (!isMe && chatMessage.senderAvatar.isNotEmpty)
+        CircleAvatar(
+          radius: 15,
+          backgroundImage: NetworkImage(chatMessage.senderAvatar),
+        )
+      else if (!isMe)
+        CircleAvatar(
+          radius: 15,
+          backgroundColor: AppColors.primaryOrange.withOpacity(0.1),
+          child: Text(
+            chatMessage.senderName.isNotEmpty 
+                ? chatMessage.senderName[0].toUpperCase()
+                : '?',
+            style: TextStyle(
+              color: AppColors.primaryOrange,
+              fontWeight: FontWeight.bold,
+              fontSize: 12,
+            ),
+          ),
+        ),
+      if (!isMe) SizedBox(width: 8),
+
+      Flexible(
+        child: Container(
+          padding: EdgeInsets.all(12),
+          margin: EdgeInsets.symmetric(vertical: 4),
+          decoration: BoxDecoration(
+            color: isMe
+                ? AppColors.primaryOrangeLight
+                : AppColors.primaryGreyLight,
+            borderRadius: BorderRadius.only(
+              topLeft: Radius.circular(16),
+              topRight: Radius.circular(16),
+              bottomLeft: isMe ? Radius.circular(16) : Radius.circular(4),
+              bottomRight: isMe ? Radius.circular(4) : Radius.circular(16),
+            ),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (!isMe && chatMessage.senderName != 'You')
+                Text(
+                  chatMessage.senderName,
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold, 
+                    fontSize: 10,
+                    color: AppColors.primaryBlack,
+                  ),
+                ),
+              SizedBox(height: 4),
+              
+              // File info
+              Row(
+                children: [
+                  Icon(
+                    chatMessage.fileIcon,
+                    size: 20,
+                    color: AppColors.primaryOrange,
+                  ),
+                  SizedBox(width: 8),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          chatMessage.fileName ?? 'Unknown file',
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w500,
+                            color: AppColors.primaryBlack,
+                          ),
+                        ),
+                        if (chatMessage.fileSize != null)
+                          Text(
+                            chatMessage.formattedFileSize,
+                            style: TextStyle(
+                              fontSize: 10,
+                              color: AppColors.primaryBlack.withOpacity(0.6),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              
+              SizedBox(height: 4),
+              Text(
+                _formatTime(chatMessage.createdAt),
+                style: TextStyle(
+                  fontSize: 8,
+                  color: AppColors.primaryBlack.withOpacity(0.5),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+
+      if (isMe) SizedBox(width: 8),
+    ],
+  );
+}
+  Widget _buildMessagesList(
+    ChatProvider chatProvider,
+    UserProvider userProvider,
+  ) {
+    // Auto-scroll to bottom when messages change
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _scrollToBottom();
+    });
+
+    if (chatProvider.messages.isEmpty) {
+      return Column(
+        children: [
+          SizedBox(height: 100),
+          Icon(
+            Icons.chat_outlined,
+            size: 64,
+            color: AppColors.primaryBlackLight,
+          ),
+          SizedBox(height: 16),
+          CustomTexts(
+            title: 'No messages yet',
+            textColor: AppColors.primaryBlack,
+            textSize: 16,
+            textWeight: FontWeight.w500,
+            textAlignment: Alignment.center,
+          ),
+          SizedBox(height: 8),
+          CustomTexts(
+            title: 'Start the conversation!',
+            textColor: AppColors.primaryBlackLight,
+            textSize: 14,
+            textWeight: FontWeight.w400,
+            textAlignment: Alignment.center,
+          ),
+        ],
+      );
+    }
+
+    return Column(
+      children: [
+        // ✅ Messages are sorted oldest to newest, so they display correctly
+        ...chatProvider.messages
+            .map(
+              (message) => _buildMessageBubble(
+                chatMessage: message,
+                isMe:
+                    message.userId == userProvider.user?.id ||
+                    message.senderName == 'You',
+              ),
+            )
+            .toList(),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: AppColors.primaryWhiteIcon,
+      appBar: AppBar(
+        actions: [Icon(null)],
+        title: CustomAppbar(),
+        backgroundColor: Colors.white,
+        elevation: 0,
+      ),
+      body: FutureBuilder(
+        future: _messagesFuture,
+        builder: (context, snapshot) {
+          final chatProvider = Provider.of<ChatProvider>(context);
+          final userProvider = Provider.of<UserProvider>(context);
+
+          // ... loading and error states ...
+
+          return Column(
+            children: [
+              // Header ...
+              Container(
+                padding: EdgeInsets.only(
+                  left: 15,
+                  top: 16,
+                  right: 17,
+                  bottom: 16,
+                ),
+                decoration: BoxDecoration(
+                  color: AppColors.primaryWhiteNormal,
+                  borderRadius: BorderRadius.only(
+                    topLeft: Radius.circular(20),
+                    topRight: Radius.circular(20),
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.1),
+                      blurRadius: 4,
+                      offset: Offset(0, 2),
+                    ),
+                  ],
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 40,
+                      height: 40,
+                      decoration: BoxDecoration(
+                        color: AppColors.primaryOrange.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Icon(
+                        Icons.groups_outlined,
+                        size: 24,
+                        color: AppColors.primaryOrange,
+                      ),
+                    ),
+                    SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          CustomTexts(
+                            title: widget.group.groupName,
+                            textColor: AppColors.primaryBlack,
+                            textSize: 14,
+                            textWeight: FontWeight.w600,
+                            textAlignment: Alignment.centerLeft,
+                          ),
+                          CustomTexts(
+                            title: 'online',
+                            textColor: AppColors.primaryBlack,
+                            textSize: 10,
+                            textWeight: FontWeight.w400,
+                            textAlignment: Alignment.centerLeft,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+
+              // Messages Section
+              Expanded(
+                child: SingleChildScrollView(
+                  controller: _scrollController,
+                  padding: EdgeInsets.all(16),
+                  // ✅ REMOVED: reverse: true - we want normal scrolling
+                  child: _buildMessagesList(chatProvider, userProvider),
+                ),
+              ),
+
+              // In GroupChatPage - Replace the Input Section with this:
+
+              // Input Section with Icons
+              Container(
+                padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  border: Border(top: BorderSide(color: Colors.grey.shade300)),
+                ),
+                child: Row(
+                  children: [
+                    // Left Icons - Camera and Mic
+                    Row(
+                      children: [
+                        IconButton(
+                          onPressed: () {
+                            _showMediaOptions(context);
+                          },
+                          icon: Icon(
+                            Icons.camera_alt_outlined,
+                            color: AppColors.primaryOrange,
+                            size: 24,
+                          ),
+                        ),
+                        IconButton(
+                          onPressed: () {
+                            _startVoiceMessage();
+                          },
+                          icon: Icon(
+                            Icons.mic_outlined,
+                            color: AppColors.primaryOrange,
+                            size: 24,
+                          ),
+                        ),
+                      ],
+                    ),
+
+                    // Text Input with Send Button Inside
+                    Expanded(
+                      child: Container(
+                        constraints: BoxConstraints(maxHeight: 100),
+                        decoration: BoxDecoration(
+                          color: Colors.grey.shade100,
+                          borderRadius: BorderRadius.circular(25),
+                        ),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: TextField(
+                                controller: _messageController,
+                                decoration: InputDecoration(
+                                  hintText: 'Type a message...',
+                                  border: InputBorder.none,
+                                  contentPadding: EdgeInsets.symmetric(
+                                    horizontal: 16,
+                                    vertical: 12,
+                                  ),
+                                ),
+                                maxLines: null,
+                                onSubmitted: (value) => _sendMessage(),
+                              ),
+                            ),
+
+                            // Send Button Inside the Text Field
+                            Container(
+                              margin: EdgeInsets.all(4),
+                              width: 40,
+                              height: 40,
+                              decoration: BoxDecoration(
+                                color: _hasText && !chatProvider.isSending
+                                    ? AppColors.primaryOrange
+                                    : AppColors.primaryBlackLight.withOpacity(
+                                        0.3,
+                                      ),
+                                shape: BoxShape.circle,
+                              ),
+                              child: IconButton(
+                                padding: EdgeInsets.zero,
+                                onPressed: _hasText && !chatProvider.isSending
+                                    ? _sendMessage
+                                    : null,
+                                icon: chatProvider.isSending
+                                    ? SizedBox(
+                                        width: 16,
+                                        height: 16,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                          color: Colors.white,
+                                        ),
+                                      )
+                                    : Icon(
+                                        Icons.send,
+                                        color: Colors.white,
+                                        size: 18,
+                                      ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+
+                    // Right Icon - Attachment
+                    IconButton(
+                      onPressed: () {
+                        _showAttachmentOptions(context);
+                      },
+                      icon: Icon(
+                        Icons.attach_file_outlined,
+                        color: AppColors.primaryOrange,
+                        size: 24,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  String _formatTime(String createdAt) {
+    try {
+      final dateTime = DateTime.parse(createdAt);
+      return '${dateTime.hour.toString().padLeft(2, '0')}:${dateTime.minute.toString().padLeft(2, '0')}';
+    } catch (e) {
+      return 'now';
+    }
+  }
+}
+
+
+There are some errors on group chat page though
+
+    return _buildCallBubble(chatMessage, isMe);
+
+      final fileType = ChatService._getMimeType(fileName);
+
+                        _recordVoiceMessage();

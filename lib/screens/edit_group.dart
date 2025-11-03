@@ -5,9 +5,16 @@ import 'package:edify_app/constants/colors.dart';
 import 'package:edify_app/widgets/texts.dart';
 import 'package:google_fonts/google_fonts.dart';
 
-class EditGroup extends StatelessWidget {
-  const EditGroup({super.key});
+class EditGroup extends StatefulWidget {
+  final dynamic group;
 
+  const EditGroup({super.key, required this.group});
+
+  @override
+  State<EditGroup> createState() => _EditGroupState();
+}
+
+class _EditGroupState extends State<EditGroup> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -29,6 +36,7 @@ class EditGroup extends StatelessWidget {
               ),
               SizedBox(height: 15),
               TextField(
+                cursorColor: AppColors.primaryOrange,
                 decoration: InputDecoration(
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(8),
@@ -57,6 +65,7 @@ class EditGroup extends StatelessWidget {
               SizedBox(
                 height: 127,
                 child: TextField(
+                  cursorColor: AppColors.primaryOrange,
                   decoration: InputDecoration(
                     border: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(8),
@@ -84,6 +93,9 @@ class EditGroup extends StatelessWidget {
                 textColor: AppColors.primaryWhiteIcon,
                 textSize: 16,
                 textWeight: FontWeight.w500,
+                onPressed: () {
+                  // to be updated
+                },
               ),
               SizedBox(height: 25),
               CustomButtons(
@@ -94,6 +106,9 @@ class EditGroup extends StatelessWidget {
                 textColor: AppColors.primaryBlack,
                 textSize: 16,
                 textWeight: FontWeight.w500,
+                onPressed: () {
+                  // to be updated
+                },
               ),
             ],
           ),

@@ -1,4 +1,4 @@
-# edify_app
+# edify_app_new
 
 A new Flutter project.
 
